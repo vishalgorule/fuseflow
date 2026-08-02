@@ -28,7 +28,7 @@
     </modules>
 
     <properties>
-        <java.version>23</java.version>
+        <java.version>25</java.version>
         <logstash-logback-encoder.version>9.0</logstash-logback-encoder.version>
     </properties>
 
