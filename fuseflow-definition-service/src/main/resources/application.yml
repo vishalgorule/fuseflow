@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: fuseflow-definition-service
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/fuseflow?currentSchema=definition}
+    username: ${SPRING_DATASOURCE_USERNAME:fuseflow}
+    password: ${SPRING_DATASOURCE_PASSWORD:fuseflow}
+
+  flyway:
+    enabled: true
+    create-schemas: true
+    schemas: definition
+    locations: classpath:db/migration
+
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

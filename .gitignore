@@ -1,0 +1,34 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse / VS Code
+.vscode/
+.settings/
+.classpath
+.project
+
+# Maven
+target/
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+
+# Env / secrets
+.env
+*.env.local
+
+# Testcontainers / temp
+.reports/
+
+docs/
+
+README.md

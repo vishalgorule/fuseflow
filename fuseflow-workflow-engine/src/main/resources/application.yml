@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: fuseflow-workflow-engine
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/fuseflow?currentSchema=engine}
+    username: ${SPRING_DATASOURCE_USERNAME:fuseflow}
+    password: ${SPRING_DATASOURCE_PASSWORD:fuseflow}
+
+  flyway:
+    enabled: true
+    create-schemas: true
+    schemas: engine
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8082
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
