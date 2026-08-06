@@ -19,6 +19,12 @@ spring:
   jackson:
     default-property-inclusion: non_null
 
+# Phase 2 demo mode: the in-memory dispatcher auto-completes activities after this delay,
+# simulating a healthy worker pool so workflows run to completion without any real worker.
+fuseflow:
+  demo:
+    activity-delay-ms: 60000
+
 server:
   port: 8082
 

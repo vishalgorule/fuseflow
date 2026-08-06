@@ -1,0 +1,135 @@
+package io.fuseflow.engine.service;
+
+import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.dispatch.ActivityTask;
+import io.fuseflow.engine.model.ActivityExecution;
+import io.fuseflow.engine.model.ActivityStatus;
+import io.fuseflow.engine.model.WorkflowExecution;
+import io.fuseflow.engine.model.WorkflowStatus;
+import io.fuseflow.engine.repository.ActivityExecutionRepository;
+import io.fuseflow.engine.repository.EventStore;
+import io.fuseflow.engine.repository.WorkflowExecutionRepository;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+class ResultHandlerTest {
+
+    private static final UUID EXECUTION = UUID.randomUUID();
+
+    private final ActivityExecutionRepository activityRepository = mock(ActivityExecutionRepository.class);
+    private final WorkflowExecutionRepository executionRepository = mock(WorkflowExecutionRepository.class);
+    private final EventStore eventStore = mock(EventStore.class);
+    private final Scheduler scheduler = mock(Scheduler.class);
+    private final ResultHandler resultHandler = new ResultHandler(activityRepository, executionRepository,
+            eventStore, scheduler, new ObjectMapper());
+
+    private static ActivityExecution activity(String taskId, ActivityStatus status, long version) {
+        Instant now = Instant.now();
+        return new ActivityExecution(EXECUTION, taskId, "act-" + taskId, status, 0, List.of("b"), 1,
+                null, null, version, now, now);
+    }
+
+    private static ActivityResult success(String taskId) {
+        return ActivityResult.success(new ActivityTask(EXECUTION, taskId, "act-" + taskId, null, 1), "{\"x\":1}");
+    }
+
+    private static ActivityResult failure(String taskId) {
+        return ActivityResult.failure(new ActivityTask(EXECUTION, taskId, "act-" + taskId, null, 1), "boom");
+    }
+
+    @Test
+    void completesActivityAppendsEventAndFansOut() {
+        when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.STARTED, 4)));
+        when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
+        when(activityRepository.countNonTerminal(EXECUTION)).thenReturn(1L); // dependent still pending
+
+        resultHandler.handleResult(success("a"));
+
+        verify(eventStore).append(eq(EXECUTION), eq("ActivityCompleted"), any());
+        verify(scheduler).onActivityCompleted(EXECUTION, "a", List.of("b"));
+        verify(executionRepository, never()).markCompleted(any(), anyLong());
+        verify(executionRepository, never()).markFailed(any(), anyLong());
+    }
+
+    @Test
+    void completesWorkflowWhenItWasTheLastActivity() {
+        when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.STARTED, 4)));
+        when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
+        when(activityRepository.countNonTerminal(EXECUTION)).thenReturn(0L);
+        when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(
+                new WorkflowExecution(EXECUTION, UUID.randomUUID(), "wf", 1, null, null,
+                        WorkflowStatus.RUNNING, 7, Instant.now(), Instant.now(), Instant.now(), null)));
+        when(executionRepository.markCompleted(EXECUTION, 7)).thenReturn(true);
+
+        resultHandler.handleResult(success("a"));
+
+        verify(eventStore).append(eq(EXECUTION), eq("WorkflowCompleted"), any());
+    }
+
+    @Test
+    void failsWorkflowOnActivityFailure() {
+        when(activityRepository.findById(EXECUTION, "b")).thenReturn(Optional.of(activity("b", ActivityStatus.STARTED, 4)));
+        when(activityRepository.markFailed(EXECUTION, "b", "boom", 4)).thenReturn(true);
+        when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(
+                new WorkflowExecution(EXECUTION, UUID.randomUUID(), "wf", 1, null, null,
+                        WorkflowStatus.RUNNING, 7, Instant.now(), Instant.now(), Instant.now(), null)));
+        when(executionRepository.markFailed(EXECUTION, 7)).thenReturn(true);
+
+        resultHandler.handleResult(failure("b"));
+
+        verify(eventStore).append(eq(EXECUTION), eq("ActivityFailed"), any());
+        verify(eventStore).append(eq(EXECUTION), eq("WorkflowFailed"), any());
+        verify(scheduler, never()).onActivityCompleted(any(), any(), any());
+    }
+
+    @Test
+    void ignoresStaleOrDuplicateResults() {
+        // Activity already terminal (e.g. re-delivered result after recovery).
+        when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.COMPLETED, 5)));
+
+        resultHandler.handleResult(success("a"));
+
+        verifyNoInteractions(eventStore, scheduler, executionRepository);
+        verify(activityRepository, never()).markCompleted(any(), any(), any(), anyLong());
+        verify(activityRepository, never()).markFailed(any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void ignoresResultsForUnknownActivities() {
+        when(activityRepository.findById(EXECUTION, "ghost")).thenReturn(Optional.empty());
+
+        resultHandler.handleResult(success("ghost"));
+
+        verifyNoInteractions(eventStore, scheduler, executionRepository);
+    }
+
+    @Test
+    void skipsWorkflowCompletionWhenTerminalTransitionLosesRace() {
+        when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.STARTED, 4)));
+        when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
+        when(activityRepository.countNonTerminal(EXECUTION)).thenReturn(0L);
+        when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(
+                new WorkflowExecution(EXECUTION, UUID.randomUUID(), "wf", 1, null, null,
+                        WorkflowStatus.RUNNING, 7, Instant.now(), Instant.now(), Instant.now(), null)));
+        // A concurrent transition already marked the execution terminal.
+        when(executionRepository.markCompleted(EXECUTION, 7)).thenReturn(false);
+
+        resultHandler.handleResult(success("a"));
+
+        verify(eventStore, never()).append(eq(EXECUTION), eq("WorkflowCompleted"), any());
+    }
+}
