@@ -16,6 +16,19 @@ spring:
   jackson:
     default-property-inclusion: non_null
 
+# Phase 3 worker-health tuning: heartbeats keep a worker ONLINE; after degraded-after without a
+# heartbeat it is DEGRADED, after timeout (≈ N missed heartbeats) it is OFFLINE. The cleanup job
+# purges the heartbeat log older than retention and removes workers OFFLINE beyond the grace period.
+fuseflow:
+  registry:
+    detection:
+      interval: 5s
+    heartbeat:
+      degraded-after: 15s
+      timeout: 30s
+      retention: 24h
+      offline-removal-after: 7d
+
 server:
   port: 8083
 
