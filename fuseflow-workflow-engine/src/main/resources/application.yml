@@ -15,13 +15,37 @@ spring:
 
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        # Bound how long a send can block on broker metadata before failing fast.
+        max.block.ms: 5000
+    consumer:
+      group-id: fuseflow-engine
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
   jackson:
     default-property-inclusion: non_null
 
-# Phase 2 demo mode: the in-memory dispatcher auto-completes activities after this delay,
-# simulating a healthy worker pool so workflows run to completion without any real worker.
+# Phase 4 (default): Kafka transport — the engine publishes activity tasks to activity-dispatch
+# and consumes results from activity-results; SDK workers execute the activities.
 fuseflow:
+  engine:
+    # kafka (default) | in-memory. In-memory keeps the Phase 2 demo auto-completer for tests and
+    # for running a workflow to completion without any worker or broker.
+    dispatch-mode: ${FUSEFLOW_ENGINE_DISPATCH_MODE:kafka}
+  kafka:
+    topic:
+      activity-dispatch: activity-dispatch
+      activity-results: activity-results
+      workflow-events: workflow-events
+      dead-letter: dead-letter
+    topics:
+      partitions: 1
+      replicas: 1
   demo:
     activity-delay-ms: 60000
 

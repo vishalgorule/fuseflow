@@ -13,14 +13,26 @@ spring:
     schemas: registry
     locations: classpath:db/migration
 
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        # Bound how long a send can block on broker metadata before failing fast.
+        max.block.ms: 5000
+
   jackson:
     default-property-inclusion: non_null
 
-# Phase 3 worker-health tuning: heartbeats keep a worker ONLINE; after degraded-after without a
-# heartbeat it is DEGRADED, after timeout (≈ N missed heartbeats) it is OFFLINE. The cleanup job
-# purges the heartbeat log older than retention and removes workers OFFLINE beyond the grace period.
+# Phase 4: publish worker state-change events (registered/deregistered/offline) to Kafka.
+# Heartbeats stay REST; only transitions are published. Disable for non-messaging deployments.
 fuseflow:
   registry:
+    events-enabled: ${FUSEFLOW_REGISTRY_EVENTS_ENABLED:true}
+    # Phase 3 worker-health tuning: heartbeats keep a worker ONLINE; after degraded-after without a
+    # heartbeat it is DEGRADED, after timeout (≈ N missed heartbeats) it is OFFLINE. The cleanup
+    # job purges the heartbeat log older than retention and removes workers OFFLINE beyond grace.
     detection:
       interval: 5s
     heartbeat:
@@ -28,6 +40,12 @@ fuseflow:
       timeout: 30s
       retention: 24h
       offline-removal-after: 7d
+  kafka:
+    topic:
+      worker-events: worker-events
+    topics:
+      partitions: 1
+      replicas: 1
 
 server:
   port: 8083

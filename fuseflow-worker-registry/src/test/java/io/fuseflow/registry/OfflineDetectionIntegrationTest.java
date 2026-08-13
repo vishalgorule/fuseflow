@@ -33,7 +33,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "fuseflow.registry.heartbeat.degraded-after=1s",
         "fuseflow.registry.heartbeat.timeout=2s",
         "fuseflow.registry.heartbeat.retention=1s",
-        "fuseflow.registry.heartbeat.offline-removal-after=5s"
+        "fuseflow.registry.heartbeat.offline-removal-after=5s",
+        // No Kafka broker in this suite — worker-events publishing is off (Phase 4).
+        "fuseflow.registry.events-enabled=false"
 })
 @AutoConfigureMockMvc
 class OfflineDetectionIntegrationTest {

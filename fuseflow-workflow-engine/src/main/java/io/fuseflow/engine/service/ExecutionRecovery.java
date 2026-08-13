@@ -1,7 +1,7 @@
 package io.fuseflow.engine.service;
 
 import io.fuseflow.engine.dispatch.AfterCommitDispatcher;
-import io.fuseflow.engine.dispatch.ActivityTask;
+import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.TaskDispatcher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -19,12 +19,14 @@ import java.util.UUID;
 
 /**
  * Boot-time recovery (architecture §6.5): scans for RUNNING executions and re-drives their
- * pending work from durable state — activities left SCHEDULED/STARTED are re-dispatched (with
- * the in-memory dispatcher there is no durable in-flight progress), and PENDING activities
- * whose dependencies are already satisfied are scheduled afterwards. The stale re-dispatch runs
- * first deliberately: {@link Scheduler#schedule} commits PENDING → SCHEDULED, so a scan in the
- * other order would re-find (and double-dispatch) the freshly scheduled tasks. No work is lost
- * or duplicated: the version-guarded transitions make re-dispatch idempotent.
+ * pending work from durable state — activities left SCHEDULED/STARTED are re-dispatched, and
+ * PENDING activities whose dependencies are already satisfied are scheduled afterwards. In the
+ * in-memory mode the engine is the only executor, so re-dispatch is a pure retry; in the Kafka
+ * mode the task may still be genuinely in-flight on a worker, and re-publishing is safe only
+ * because results are idempotent by {@code (executionId, taskId, attempt)}. The stale
+ * re-dispatch runs first deliberately: {@link Scheduler#schedule} commits PENDING → SCHEDULED,
+ * so a scan in the other order would re-find (and double-dispatch) the freshly scheduled tasks.
+ * No work is lost or duplicated: the version-guarded transitions make re-dispatch idempotent.
  */
 @Component
 public class ExecutionRecovery implements ApplicationRunner {

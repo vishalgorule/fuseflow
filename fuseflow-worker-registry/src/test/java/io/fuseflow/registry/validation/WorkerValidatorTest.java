@@ -1,8 +1,8 @@
 package io.fuseflow.registry.validation;
 
 import io.fuseflow.common.dto.ApiError;
-import io.fuseflow.registry.dto.HeartbeatRequest;
-import io.fuseflow.registry.dto.WorkerRequest;
+import io.fuseflow.common.dto.HeartbeatRequest;
+import io.fuseflow.common.dto.WorkerRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -1,5 +1,6 @@
 package io.fuseflow.engine.dispatch;
 
+import io.fuseflow.common.messaging.ActivityTask;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.LinkedHashMap;

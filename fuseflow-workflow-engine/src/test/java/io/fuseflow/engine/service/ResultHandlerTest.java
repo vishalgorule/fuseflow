@@ -1,7 +1,8 @@
 package io.fuseflow.engine.service;
 
+import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.ActivityResult;
-import io.fuseflow.engine.dispatch.ActivityTask;
+import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -34,8 +35,9 @@ class ResultHandlerTest {
     private final WorkflowExecutionRepository executionRepository = mock(WorkflowExecutionRepository.class);
     private final EventStore eventStore = mock(EventStore.class);
     private final Scheduler scheduler = mock(Scheduler.class);
+    private final WorkflowEventPublisher workflowEventPublisher = mock(WorkflowEventPublisher.class);
     private final ResultHandler resultHandler = new ResultHandler(activityRepository, executionRepository,
-            eventStore, scheduler, new ObjectMapper());
+            eventStore, scheduler, workflowEventPublisher, new ObjectMapper());
 
     private static ActivityExecution activity(String taskId, ActivityStatus status, long version) {
         Instant now = Instant.now();
@@ -68,6 +70,24 @@ class ResultHandlerTest {
     @Test
     void completesWorkflowWhenItWasTheLastActivity() {
         when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.STARTED, 4)));
+        when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
+        when(activityRepository.countNonTerminal(EXECUTION)).thenReturn(0L);
+        when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(
+                new WorkflowExecution(EXECUTION, UUID.randomUUID(), "wf", 1, null, null,
+                        WorkflowStatus.RUNNING, 7, Instant.now(), Instant.now(), Instant.now(), null)));
+        when(executionRepository.markCompleted(EXECUTION, 7)).thenReturn(true);
+
+        resultHandler.handleResult(success("a"));
+
+        verify(eventStore).append(eq(EXECUTION), eq("WorkflowCompleted"), any());
+        verify(workflowEventPublisher).publish(eq(EXECUTION), eq("WorkflowCompleted"), any());
+    }
+
+    @Test
+    void acceptsResultsForScheduledActivitiesInKafkaMode() {
+        // Kafka (Phase 4): a worker may complete before its STARTED signal is consumed, so
+        // SCHEDULED is in-flight too.
+        when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.SCHEDULED, 4)));
         when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
         when(activityRepository.countNonTerminal(EXECUTION)).thenReturn(0L);
         when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(

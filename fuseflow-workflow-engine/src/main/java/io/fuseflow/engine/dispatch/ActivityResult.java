@@ -1,5 +1,7 @@
 package io.fuseflow.engine.dispatch;
 
+import io.fuseflow.common.messaging.ActivityTask;
+
 import java.util.UUID;
 
 /**

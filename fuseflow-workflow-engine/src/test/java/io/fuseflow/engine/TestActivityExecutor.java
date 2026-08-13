@@ -2,7 +2,7 @@ package io.fuseflow.engine;
 
 import io.fuseflow.engine.dispatch.ActivityExecutor;
 import io.fuseflow.engine.dispatch.ActivityResult;
-import io.fuseflow.engine.dispatch.ActivityTask;
+import io.fuseflow.common.messaging.ActivityTask;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;

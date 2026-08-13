@@ -1,6 +1,8 @@
 package io.fuseflow.engine.dispatch;
 
+import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.service.ActivityStateService;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import io.fuseflow.engine.service.ResultHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,9 +11,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
 /**
- * Phase 2 {@link TaskDispatcher}: runs each {@link ActivityTask} on a worker thread pool,
- * delegating the actual work to an {@link ActivityExecutor} (demo auto-completer in the app,
- * deterministic fakes in tests). A Kafka-backed dispatcher replaces this in Phase 4.
+ * Phase 2 {@link TaskDispatcher} (opt-in via {@code fuseflow.engine.dispatch-mode=in-memory}):
+ * runs each {@link ActivityTask} on a worker thread pool, delegating the actual work to an
+ * {@link ActivityExecutor} (demo auto-completer in the app, deterministic fakes in tests).
+ * Since Phase 4 the {@link KafkaTaskDispatcher} is the default; this in-memory variant is kept
+ * for tests and the demo auto-complete mode.
  *
  * <p>Flow per task: mark STARTED (durable, transactional) → execute → hand the result to the
  * {@link ResultHandler}. Executor exceptions are converted to failed results so the state
@@ -23,6 +27,7 @@ import org.springframework.stereotype.Component;
  * with a lazy proxy.
  */
 @Component
+@ConditionalOnProperty(name = "fuseflow.engine.dispatch-mode", havingValue = "in-memory")
 public class InMemoryTaskDispatcher implements TaskDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryTaskDispatcher.class);

@@ -1,5 +1,6 @@
 package io.fuseflow.registry.service;
 
+import io.fuseflow.registry.messaging.WorkerEventPublisher;
 import io.fuseflow.registry.model.Worker;
 import io.fuseflow.registry.model.WorkerStatus;
 import io.fuseflow.registry.repository.WorkerRepository;
@@ -12,6 +13,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -25,8 +27,9 @@ class OfflineDetectorTest {
     private static final Duration REMOVAL_AFTER = Duration.ofDays(1);
 
     private final WorkerRepository repository = mock(WorkerRepository.class);
+    private final WorkerEventPublisher workerEventPublisher = mock(WorkerEventPublisher.class);
     private final OfflineDetector detector =
-            new OfflineDetector(repository, DEGRADED_AFTER, OFFLINE_AFTER, RETENTION, REMOVAL_AFTER);
+            new OfflineDetector(repository, workerEventPublisher, DEGRADED_AFTER, OFFLINE_AFTER, RETENTION, REMOVAL_AFTER);
 
     private static Worker worker(UUID id, WorkerStatus status, Instant lastHeartbeatAt) {
         Instant now = Instant.now();
@@ -38,10 +41,14 @@ class OfflineDetectorTest {
         Instant now = Instant.now();
         Worker stale = worker(UUID.randomUUID(), WorkerStatus.ONLINE, now.minus(Duration.ofSeconds(40)));
         when(repository.findByStatusIn(any())).thenReturn(List.of(stale));
+        when(repository.downgrade(stale.id(), WorkerStatus.ONLINE, WorkerStatus.OFFLINE, stale.lastHeartbeatAt()))
+                .thenReturn(true);
 
         detector.detect(now);
 
         verify(repository).downgrade(stale.id(), WorkerStatus.ONLINE, WorkerStatus.OFFLINE, stale.lastHeartbeatAt());
+        // The transition to OFFLINE publishes a worker_offline event (Phase 4).
+        verify(workerEventPublisher).publish(eq(stale.id()), eq("worker_offline"), any());
     }
 
     @Test

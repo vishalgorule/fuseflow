@@ -1,5 +1,6 @@
 package io.fuseflow.registry.service;
 
+import io.fuseflow.registry.messaging.WorkerEventPublisher;
 import io.fuseflow.registry.model.Worker;
 import io.fuseflow.registry.model.WorkerStatus;
 import io.fuseflow.registry.repository.WorkerRepository;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Offline detection + cleanup (Phase 3, FR-12): a scheduled job that
@@ -34,17 +36,20 @@ public class OfflineDetector {
     private static final Logger log = LoggerFactory.getLogger(OfflineDetector.class);
 
     private final WorkerRepository workerRepository;
+    private final WorkerEventPublisher workerEventPublisher;
     private final Duration degradedAfter;
     private final Duration offlineAfter;
     private final Duration heartbeatRetention;
     private final Duration offlineRemovalAfter;
 
     public OfflineDetector(WorkerRepository workerRepository,
+                           WorkerEventPublisher workerEventPublisher,
                            @Value("${fuseflow.registry.heartbeat.degraded-after:15s}") Duration degradedAfter,
                            @Value("${fuseflow.registry.heartbeat.timeout:30s}") Duration offlineAfter,
                            @Value("${fuseflow.registry.heartbeat.retention:24h}") Duration heartbeatRetention,
                            @Value("${fuseflow.registry.heartbeat.offline-removal-after:7d}") Duration offlineRemovalAfter) {
         this.workerRepository = workerRepository;
+        this.workerEventPublisher = workerEventPublisher;
         this.degradedAfter = degradedAfter;
         this.offlineAfter = offlineAfter;
         this.heartbeatRetention = heartbeatRetention;
@@ -65,6 +70,10 @@ public class OfflineDetector {
             if (target != worker.status()
                     && workerRepository.downgrade(worker.id(), worker.status(), target, worker.lastHeartbeatAt())) {
                 log.info("Worker {} {} -> {}", worker.id(), worker.status(), target);
+                if (target == WorkerStatus.OFFLINE) {
+                    workerEventPublisher.publish(worker.id(), "worker_offline",
+                            Map.of("lastHeartbeatAt", worker.lastHeartbeatAt().toString()));
+                }
             }
         }
     }

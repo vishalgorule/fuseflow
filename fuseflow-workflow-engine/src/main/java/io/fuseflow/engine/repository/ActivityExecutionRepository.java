@@ -167,13 +167,17 @@ public class ActivityExecutionRepository {
                 .update() == 1;
     }
 
-    /** STARTED → COMPLETED with output (idempotent; false if stale/duplicate completion). */
+    /**
+     * In-flight → COMPLETED with output (idempotent; false if stale/duplicate completion).
+     * Accepts SCHEDULED or STARTED: with the Kafka dispatcher (Phase 4) a worker may complete
+     * before its STARTED signal is consumed.
+     */
     public boolean markCompleted(UUID executionId, String taskId, String output, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
                         SET status = 'COMPLETED', output = CAST(:output AS jsonb), version = version + 1, updated_at = :now
                         WHERE workflow_execution_id = :executionId AND task_id = :taskId
-                          AND status = 'STARTED' AND version = :expectedVersion
+                          AND status IN ('SCHEDULED', 'STARTED') AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("executionId", executionId)
                 .param("taskId", taskId)
@@ -183,13 +187,16 @@ public class ActivityExecutionRepository {
                 .update() == 1;
     }
 
-    /** STARTED → FAILED with error message (idempotent; false if stale/duplicate completion). */
+    /**
+     * In-flight → FAILED with error message (idempotent; false if stale/duplicate completion).
+     * Accepts SCHEDULED or STARTED (see {@link #markCompleted}).
+     */
     public boolean markFailed(UUID executionId, String taskId, String error, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
                         SET status = 'FAILED', error = :error, version = version + 1, updated_at = :now
                         WHERE workflow_execution_id = :executionId AND task_id = :taskId
-                          AND status = 'STARTED' AND version = :expectedVersion
+                          AND status IN ('SCHEDULED', 'STARTED') AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("executionId", executionId)
                 .param("taskId", taskId)

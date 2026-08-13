@@ -3,6 +3,7 @@ package io.fuseflow.registry;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -13,6 +14,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
+// No Kafka broker here — worker-events publishing is off (Phase 4).
+@TestPropertySource(properties = "fuseflow.registry.events-enabled=false")
 class FuseflowWorkerRegistryApplicationTests {
 
     @Container

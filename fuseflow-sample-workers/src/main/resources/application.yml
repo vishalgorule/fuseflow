@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: fuseflow-sample-workers
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        max.block.ms: 5000
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+fuseflow:
+  worker:
+    enabled: true
+    # Stable identity across restarts — the registry upserts on the client-supplied id.
+    id: ${FUSEFLOW_WORKER_ID:22220000-0000-0000-0000-000000000001}
+    host: ${FUSEFLOW_WORKER_HOST:localhost}
+    capacity: 2
+    heartbeat-interval: 5s
+    group-id: fuseflow-workers
+    register-retries: 10
+    register-retry-delay: 2s
+  registry:
+    base-url: ${FUSEFLOW_REGISTRY_URL:http://localhost:8083}
+  kafka:
+    topic:
+      activity-dispatch: activity-dispatch
+      activity-results: activity-results
+
+server:
+  port: 8090
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

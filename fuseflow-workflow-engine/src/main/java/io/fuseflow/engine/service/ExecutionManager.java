@@ -6,6 +6,7 @@ import io.fuseflow.engine.definition.WorkflowDefinitionSnapshot;
 import io.fuseflow.engine.dto.EventResponse;
 import io.fuseflow.engine.dto.ExecutionRequest;
 import io.fuseflow.engine.dto.ExecutionResponse;
+import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.DagModel;
 import io.fuseflow.engine.model.WorkflowEvent;
@@ -43,6 +44,7 @@ public class ExecutionManager {
     private final ActivityExecutionRepository activityRepository;
     private final EventStore eventStore;
     private final Scheduler scheduler;
+    private final WorkflowEventPublisher workflowEventPublisher;
     private final ObjectMapper objectMapper;
 
     public ExecutionManager(WorkflowDefinitionReader definitionReader,
@@ -50,12 +52,14 @@ public class ExecutionManager {
                             ActivityExecutionRepository activityRepository,
                             EventStore eventStore,
                             Scheduler scheduler,
+                            WorkflowEventPublisher workflowEventPublisher,
                             ObjectMapper objectMapper) {
         this.definitionReader = definitionReader;
         this.executionRepository = executionRepository;
         this.activityRepository = activityRepository;
         this.eventStore = eventStore;
         this.scheduler = scheduler;
+        this.workflowEventPublisher = workflowEventPublisher;
         this.objectMapper = objectMapper;
     }
 
@@ -76,10 +80,12 @@ public class ExecutionManager {
         executionRepository.insert(execution);
 
         activityRepository.insertAll(executionId, DagModel.from(definition));
-        eventStore.append(executionId, "WorkflowStarted", Map.of(
+        Map<String, Object> startedPayload = Map.of(
                 "workflowId", definition.id().toString(),
                 "workflowName", definition.name(),
-                "definitionVersion", definition.version()));
+                "definitionVersion", definition.version());
+        eventStore.append(executionId, "WorkflowStarted", startedPayload);
+        workflowEventPublisher.publish(executionId, "WorkflowStarted", startedPayload);
 
         List<ActivityExecution> roots = activityRepository.findForExecution(executionId).stream()
                 .filter(a -> a.remainingDependencies() == 0)

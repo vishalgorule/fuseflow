@@ -1,5 +1,7 @@
 package io.fuseflow.engine.dispatch;
 
+import io.fuseflow.common.messaging.ActivityTask;
+
 /**
  * SPI for actually executing an activity's business logic (Phase 2 in-memory mode).
  * Tests inject deterministic fakes (immediate success, fail-a-task, latch-blocked);

@@ -1,6 +1,7 @@
 package io.fuseflow.engine.service;
 
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -22,10 +23,12 @@ import java.util.UUID;
  * Result handler (Phase 2 plan §4 task 5): persists activity output/failure, appends the
  * corresponding event, fans out to dependents, and drives the execution to a terminal state.
  *
- * <p>Idempotency: results are accepted only when the activity is currently STARTED, and the
- * terminal transition itself is a version-guarded conditional update — duplicate or stale
- * results are ignored. Phase 2 failure policy is minimal: one failed activity fails the
- * whole workflow (retries arrive in Phase 5).
+ * <p>Idempotency: results are accepted only while the activity is in-flight ({@code SCHEDULED}
+ * or {@code STARTED}), and the terminal transition itself is a version-guarded conditional
+ * update — duplicate or stale results are ignored. Since Phase 4 (Kafka) a worker may complete
+ * before its STARTED signal is consumed, so {@code SCHEDULED} is treated as in-flight too.
+ * Phase 2 failure policy is minimal: one failed activity fails the whole workflow (retries
+ * arrive in Phase 5).
  */
 @Service
 public class ResultHandler {
@@ -36,24 +39,28 @@ public class ResultHandler {
     private final WorkflowExecutionRepository executionRepository;
     private final EventStore eventStore;
     private final Scheduler scheduler;
+    private final WorkflowEventPublisher workflowEventPublisher;
     private final ObjectMapper objectMapper;
 
     public ResultHandler(ActivityExecutionRepository activityRepository,
                          WorkflowExecutionRepository executionRepository,
                          EventStore eventStore,
                          Scheduler scheduler,
+                         WorkflowEventPublisher workflowEventPublisher,
                          ObjectMapper objectMapper) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.eventStore = eventStore;
         this.scheduler = scheduler;
+        this.workflowEventPublisher = workflowEventPublisher;
         this.objectMapper = objectMapper;
     }
 
     @Transactional
     public void handleResult(ActivityResult result) {
         ActivityExecution activity = activityRepository.findById(result.executionId(), result.taskId()).orElse(null);
-        if (activity == null || activity.status() != ActivityStatus.STARTED) {
+        if (activity == null || (activity.status() != ActivityStatus.STARTED
+                && activity.status() != ActivityStatus.SCHEDULED)) {
             // Duplicate or stale result (e.g. re-delivery after recovery) — ignore.
             log.debug("Ignoring stale result for task {} of execution {}", result.taskId(), result.executionId());
             return;
@@ -92,6 +99,7 @@ public class ResultHandler {
         }
         if (executionRepository.markCompleted(executionId, execution.version())) {
             eventStore.append(executionId, "WorkflowCompleted", Map.of());
+            workflowEventPublisher.publish(executionId, "WorkflowCompleted", Map.of());
             log.info("Workflow execution {} completed", executionId);
         }
     }
@@ -105,6 +113,7 @@ public class ResultHandler {
         }
         if (executionRepository.markFailed(executionId, execution.version())) {
             eventStore.append(executionId, "WorkflowFailed", payload("error", error));
+            workflowEventPublisher.publish(executionId, "WorkflowFailed", payload("error", error));
             log.info("Workflow execution {} failed: {}", executionId, error);
         }
     }

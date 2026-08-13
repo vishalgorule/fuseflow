@@ -1,10 +1,10 @@
-package io.fuseflow.registry.dto;
+package io.fuseflow.common.dto;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-/** Full representation of a worker returned by the API. */
+/** Full representation of a worker returned by the registry API. */
 public record WorkerResponse(
         UUID id,
         String host,

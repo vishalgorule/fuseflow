@@ -1,7 +1,7 @@
 package io.fuseflow.engine.service;
 
 import io.fuseflow.engine.dispatch.AfterCommitDispatcher;
-import io.fuseflow.engine.dispatch.ActivityTask;
+import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.TaskDispatcher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;

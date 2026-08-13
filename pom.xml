@@ -25,6 +25,8 @@
         <module>fuseflow-definition-service</module>
         <module>fuseflow-workflow-engine</module>
         <module>fuseflow-worker-registry</module>
+        <module>fuseflow-sdk</module>
+        <module>fuseflow-sample-workers</module>
     </modules>
 
     <properties>
@@ -38,6 +40,11 @@
             <dependency>
                 <groupId>io.fuseflow</groupId>
                 <artifactId>fuseflow-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.fuseflow</groupId>
+                <artifactId>fuseflow-sdk</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- Structured JSON logging (not managed by Spring Boot BOM) -->

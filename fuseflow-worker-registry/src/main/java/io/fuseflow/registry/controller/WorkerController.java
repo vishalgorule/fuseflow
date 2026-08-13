@@ -1,9 +1,9 @@
 package io.fuseflow.registry.controller;
 
-import io.fuseflow.registry.dto.HeartbeatRequest;
+import io.fuseflow.common.dto.HeartbeatRequest;
+import io.fuseflow.common.dto.WorkerRequest;
+import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.registry.dto.WorkerRegistration;
-import io.fuseflow.registry.dto.WorkerRequest;
-import io.fuseflow.registry.dto.WorkerResponse;
 import io.fuseflow.registry.service.WorkerService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;

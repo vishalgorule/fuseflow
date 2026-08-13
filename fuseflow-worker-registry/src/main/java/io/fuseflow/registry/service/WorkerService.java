@@ -1,11 +1,12 @@
 package io.fuseflow.registry.service;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.HeartbeatRequest;
+import io.fuseflow.common.dto.WorkerRequest;
+import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.common.exception.ApiException;
-import io.fuseflow.registry.dto.HeartbeatRequest;
 import io.fuseflow.registry.dto.WorkerRegistration;
-import io.fuseflow.registry.dto.WorkerRequest;
-import io.fuseflow.registry.dto.WorkerResponse;
+import io.fuseflow.registry.messaging.WorkerEventPublisher;
 import io.fuseflow.registry.model.Worker;
 import io.fuseflow.registry.model.WorkerActivity;
 import io.fuseflow.registry.model.WorkerStatus;
@@ -34,10 +35,13 @@ public class WorkerService {
 
     private final WorkerRepository workerRepository;
     private final WorkerValidator workerValidator;
+    private final WorkerEventPublisher workerEventPublisher;
 
-    public WorkerService(WorkerRepository workerRepository, WorkerValidator workerValidator) {
+    public WorkerService(WorkerRepository workerRepository, WorkerValidator workerValidator,
+                         WorkerEventPublisher workerEventPublisher) {
         this.workerRepository = workerRepository;
         this.workerValidator = workerValidator;
+        this.workerEventPublisher = workerEventPublisher;
     }
 
     @Transactional
@@ -54,6 +58,7 @@ public class WorkerService {
             workerRepository.insertWorker(new Worker(request.id(), request.host(), capacity,
                     WorkerStatus.ONLINE, now, 0, now, now));
             workerRepository.replaceActivities(request.id(), request.activities());
+            workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, capacity));
             return new WorkerRegistration(get(request.id()), true);
         }
         if (!workerRepository.updateOnRegister(request.id(), request.host(), capacity, existing.version())) {
@@ -61,6 +66,7 @@ public class WorkerService {
                     "Worker '" + request.id() + "' was modified concurrently; retry");
         }
         workerRepository.replaceActivities(request.id(), request.activities());
+        workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, capacity));
         return new WorkerRegistration(get(request.id()), false);
     }
 
@@ -82,6 +88,7 @@ public class WorkerService {
         if (!workerRepository.deleteWorker(id)) {
             throw ApiException.notFound("worker_not_found", "Worker '" + id + "' does not exist");
         }
+        workerEventPublisher.publish(id, "worker_deregistered", Map.of());
     }
 
     public List<WorkerResponse> list() {
@@ -99,6 +106,14 @@ public class WorkerService {
     /** Capability lookup (FR-12): every worker advertising the activity, with its health. */
     public List<WorkerResponse> findCapable(String activityName) {
         return toResponses(workerRepository.findByActivity(activityName));
+    }
+
+    private static Map<String, Object> eventPayload(WorkerRequest request, int capacity) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("host", request.host());
+        payload.put("capacity", capacity);
+        payload.put("activities", request.activities());
+        return payload;
     }
 
     // ---------------------------------------------------------------- mapping

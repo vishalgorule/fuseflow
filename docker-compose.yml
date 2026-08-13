@@ -22,13 +22,17 @@ services:
     image: apache/kafka:4.3.1
     container_name: fuseflow-kafka
     environment:
-      # KRaft mode — single broker/controller, no ZooKeeper
+      # KRaft mode — single broker/controller, no ZooKeeper.
+      # Two advertised listeners so clients get the right address depending on where they run:
+      #   INTERNAL (kafka:29092) — other containers (kafdrop, future in-network apps)
+      #   EXTERNAL (localhost:9092) — host apps (engine, registry, sample workers)
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -49,7 +53,9 @@ services:
     image: obsidiandynamics/kafdrop:4.2.0
     container_name: fuseflow-kafdrop
     environment:
-      KAFKA_BROKERCONNECT: kafka:9092
+      # Connect via the INTERNAL advertised listener (kafka:29092), not localhost:9092 —
+      # localhost inside this container is kafdrop itself.
+      KAFKA_BROKERCONNECT: kafka:29092
       JVM_OPTS: "-Xms32M -Xmx64M"
     ports:
       - "9000:9000"
