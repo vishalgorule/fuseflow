@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 MVN := ./mvnw
 
-.PHONY: help up down build test verify clean logs ps services stop-services workers stop-workers
+.PHONY: help up down build test verify clean logs ps services stop-services workers stop-workers workers-fleet stop-fleet-workers
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -45,6 +45,15 @@ workers: build ## Build and run the sample SDK workers (port 8090; requires engi
 stop-workers: ## Stop the locally running sample workers
 	@pid=$$(lsof -ti tcp:8090 2>/dev/null); \
 	if [ -n "$$pid" ]; then kill $$pid && echo "stopped sample-workers ($$pid)"; fi
+
+workers-fleet: build ## Build + launch a heterogeneous pool fleet (3 io + 3 media workers, ports 8100-8105)
+	@scripts/start-fleet-workers.sh 3 3 8
+
+stop-fleet-workers: ## Stop the fleet workers (ports 8100+)
+	@for port in $$(seq 8100 8120); do \
+		pid=$$(lsof -ti tcp:$$port 2>/dev/null); \
+		if [ -n "$$pid" ]; then kill $$pid && echo "stopped fleet worker on $$port ($$pid)"; fi; \
+	done
 
 stop-services: ## Stop locally running services
 	@for p in gateway:8080 definition:8081 engine:8082 registry:8083; do \

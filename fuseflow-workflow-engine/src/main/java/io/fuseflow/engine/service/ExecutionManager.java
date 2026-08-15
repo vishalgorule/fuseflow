@@ -4,6 +4,7 @@ import io.fuseflow.common.exception.ApiException;
 import io.fuseflow.engine.definition.WorkflowDefinitionReader;
 import io.fuseflow.engine.definition.WorkflowDefinitionSnapshot;
 import io.fuseflow.engine.dto.EventResponse;
+import io.fuseflow.engine.ha.EngineShards;
 import io.fuseflow.engine.dto.ExecutionRequest;
 import io.fuseflow.engine.dto.ExecutionResponse;
 import io.fuseflow.engine.messaging.WorkflowEventPublisher;
@@ -45,6 +46,7 @@ public class ExecutionManager {
     private final EventStore eventStore;
     private final Scheduler scheduler;
     private final WorkflowEventPublisher workflowEventPublisher;
+    private final EngineShards engineShards;
     private final ObjectMapper objectMapper;
 
     public ExecutionManager(WorkflowDefinitionReader definitionReader,
@@ -53,6 +55,7 @@ public class ExecutionManager {
                             EventStore eventStore,
                             Scheduler scheduler,
                             WorkflowEventPublisher workflowEventPublisher,
+                            EngineShards engineShards,
                             ObjectMapper objectMapper) {
         this.definitionReader = definitionReader;
         this.executionRepository = executionRepository;
@@ -60,6 +63,7 @@ public class ExecutionManager {
         this.eventStore = eventStore;
         this.scheduler = scheduler;
         this.workflowEventPublisher = workflowEventPublisher;
+        this.engineShards = engineShards;
         this.objectMapper = objectMapper;
     }
 
@@ -75,8 +79,11 @@ public class ExecutionManager {
         UUID executionId = UUID.randomUUID();
         Instant now = Instant.now();
         String input = request.input() == null ? null : request.input().toString();
+        // Phase 5 engine HA: pin the execution to its shard so any engine instance can scope
+        // boot-time recovery to the shards it owns (shardOf is identical on every instance).
         WorkflowExecution execution = new WorkflowExecution(executionId, definition.id(), definition.name(),
-                definition.version(), input, null, WorkflowStatus.RUNNING, 0, now, now, now, null);
+                definition.version(), input, null, WorkflowStatus.RUNNING, 0, now, now, now, null,
+                engineShards.shardOf(executionId));
         executionRepository.insert(execution);
 
         activityRepository.insertAll(executionId, DagModel.from(definition));

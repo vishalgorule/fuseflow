@@ -1,6 +1,5 @@
 package io.fuseflow.registry.controller;
 
-import io.fuseflow.common.dto.HeartbeatRequest;
 import io.fuseflow.common.dto.WorkerRequest;
 import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.registry.dto.WorkerRegistration;
@@ -37,9 +36,8 @@ public class WorkerController {
     }
 
     @PostMapping("/{id}/heartbeat")
-    public ResponseEntity<Void> heartbeat(@PathVariable UUID id,
-                                          @RequestBody(required = false) HeartbeatRequest request) {
-        workerService.heartbeat(id, request);
+    public ResponseEntity<Void> heartbeat(@PathVariable UUID id) {
+        workerService.heartbeat(id);
         return ResponseEntity.noContent().build();
     }
 

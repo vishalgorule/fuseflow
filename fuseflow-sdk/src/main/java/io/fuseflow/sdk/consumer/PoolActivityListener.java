@@ -14,31 +14,31 @@ import tools.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Consumes {@code activity-dispatch} messages (Phase 4). Messages for activities this worker
- * does not support are acknowledged and skipped deliberately: with a single dispatch topic and
- * capability-based consumer groups, every group receives the full stream and filters — the
- * engine has already ensured a capable worker exists somewhere (Phase 4 decision; unroutable
- * tasks are caught by Phase 5 timeouts). The correlation ID from the dispatch header is
- * propagated into MDC and echoed back on the result.
+ * Consumes dispatch messages from the worker's <b>pool queue</b> ({@code fuseflow-pool.<pool>},
+ * Phase 5). Phase 4 broadcast-and-filter is replaced by per-pool routing: the engine publishes
+ * each task to exactly one pool's queue, so a worker only ever receives activities its pool
+ * advertises — the capability check below is a defensive guard, not the routing mechanism.
+ * The correlation ID from the dispatch header is propagated into MDC and echoed back on the
+ * result.
  */
-public class ActivityDispatchListener {
+public class PoolActivityListener {
 
-    private static final Logger log = LoggerFactory.getLogger(ActivityDispatchListener.class);
+    private static final Logger log = LoggerFactory.getLogger(PoolActivityListener.class);
 
     private final ObjectMapper objectMapper;
     private final ActivityRegistry activityRegistry;
     private final FuseFlowWorker worker;
 
-    public ActivityDispatchListener(ObjectMapper objectMapper,
-                                    ActivityRegistry activityRegistry,
-                                    FuseFlowWorker worker) {
+    public PoolActivityListener(ObjectMapper objectMapper,
+                                ActivityRegistry activityRegistry,
+                                FuseFlowWorker worker) {
         this.objectMapper = objectMapper;
         this.activityRegistry = activityRegistry;
         this.worker = worker;
     }
 
-    @KafkaListener(topics = "${fuseflow.kafka.topic.activity-dispatch:activity-dispatch}",
-            groupId = "${fuseflow.worker.group-id:fuseflow-workers}")
+    @KafkaListener(topics = "${fuseflow.queue.pool-prefix:fuseflow-pool}.${fuseflow.worker.pool:default}",
+            groupId = "${fuseflow.worker.pool:default}")
     public void onDispatch(ConsumerRecord<String, String> record) {
         applyCorrelation(record);
         try {

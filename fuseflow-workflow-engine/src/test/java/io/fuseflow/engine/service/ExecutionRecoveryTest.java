@@ -3,6 +3,7 @@ package io.fuseflow.engine.service;
 import io.fuseflow.engine.dispatch.AfterCommitDispatcher;
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.TaskDispatcher;
+import io.fuseflow.engine.ha.EngineShards;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -16,12 +17,14 @@ import org.mockito.InOrder;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -41,7 +44,7 @@ class ExecutionRecoveryTest {
     private final AfterCommitDispatcher afterCommitDispatcher = mock(AfterCommitDispatcher.class);
     private final TaskDispatcher taskDispatcher = mock(TaskDispatcher.class);
     private final ExecutionRecovery recovery = new ExecutionRecovery(executionRepository, activityRepository,
-            scheduler, afterCommitDispatcher, taskDispatcher);
+            scheduler, afterCommitDispatcher, taskDispatcher, new EngineShards(8, "all"));
 
     private static WorkflowExecution running(UUID id) {
         Instant now = Instant.now();
@@ -85,5 +88,22 @@ class ExecutionRecoveryTest {
         recovery.run(null);
 
         verifyNoInteractions(activityRepository, scheduler, afterCommitDispatcher, taskDispatcher);
+    }
+
+    @Test
+    void shardScopedInstanceRecoversOnlyItsShards() {
+        // Phase 5 HA: an instance owning shards 0-3 queries only those — never the full scan.
+        ExecutionRecovery sharded = new ExecutionRecovery(executionRepository, activityRepository,
+                scheduler, afterCommitDispatcher, taskDispatcher, new EngineShards(8, "0-3"));
+        WorkflowExecution execution = running(EXECUTION);
+        when(executionRepository.findByStatusInShards(WorkflowStatus.RUNNING, Set.of(0, 1, 2, 3)))
+                .thenReturn(List.of(execution));
+        when(activityRepository.findStale(EXECUTION)).thenReturn(List.of());
+        when(activityRepository.findRunnableTaskIds(EXECUTION)).thenReturn(List.of());
+
+        sharded.run(null);
+
+        verify(executionRepository).findByStatusInShards(WorkflowStatus.RUNNING, Set.of(0, 1, 2, 3));
+        verify(executionRepository, never()).findByStatus(any());
     }
 }

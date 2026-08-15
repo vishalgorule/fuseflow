@@ -3,6 +3,7 @@ package io.fuseflow.engine.service;
 import io.fuseflow.engine.dispatch.AfterCommitDispatcher;
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.TaskDispatcher;
+import io.fuseflow.engine.ha.EngineShards;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
@@ -38,26 +39,34 @@ public class ExecutionRecovery implements ApplicationRunner {
     private final Scheduler scheduler;
     private final AfterCommitDispatcher afterCommitDispatcher;
     private final TaskDispatcher taskDispatcher;
+    private final EngineShards engineShards;
 
     public ExecutionRecovery(WorkflowExecutionRepository executionRepository,
                              ActivityExecutionRepository activityRepository,
                              Scheduler scheduler,
                              AfterCommitDispatcher afterCommitDispatcher,
-                             TaskDispatcher taskDispatcher) {
+                             TaskDispatcher taskDispatcher,
+                             EngineShards engineShards) {
         this.executionRepository = executionRepository;
         this.activityRepository = activityRepository;
         this.scheduler = scheduler;
         this.afterCommitDispatcher = afterCommitDispatcher;
         this.taskDispatcher = taskDispatcher;
+        this.engineShards = engineShards;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        List<WorkflowExecution> running = executionRepository.findByStatus(WorkflowStatus.RUNNING);
+        // Phase 5 engine HA: recover only the shards this instance owns, so multiple engine
+        // instances in the fuseflow-engine group never re-dispatch the same execution.
+        List<WorkflowExecution> running = engineShards.ownsAll()
+                ? executionRepository.findByStatus(WorkflowStatus.RUNNING)
+                : executionRepository.findByStatusInShards(WorkflowStatus.RUNNING, engineShards.ownedShards());
         if (running.isEmpty()) {
             return;
         }
-        log.info("Recovering {} RUNNING execution(s)", running.size());
+        log.info("Recovering {} RUNNING execution(s) (shards {} of {})", running.size(),
+                engineShards.ownedShards(), engineShards.shardCount());
         for (WorkflowExecution execution : running) {
             recover(execution);
         }

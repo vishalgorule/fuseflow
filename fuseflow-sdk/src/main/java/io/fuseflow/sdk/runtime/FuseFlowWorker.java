@@ -37,8 +37,9 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
 
     private final UUID id;
     private final String host;
-    private final int capacity;
     private final Duration heartbeatInterval;
+    private final String poolName;
+    private final Integer concurrency;
     private final int registerRetries;
     private final Duration registerRetryDelay;
     private final ActivityRegistry activityRegistry;
@@ -59,9 +60,13 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
                           ObjectMapper objectMapper) {
         this.id = properties.id() != null ? properties.id() : UUID.randomUUID();
         this.host = blankToDefault(properties.host(), defaultHost());
-        this.capacity = properties.capacity() != null ? properties.capacity() : 1;
         this.heartbeatInterval = properties.heartbeatInterval() != null
                 ? properties.heartbeatInterval() : Duration.ofSeconds(5);
+        // Phase 5: the pool is a single knob — it drives the registered pool name, the
+        // dispatch queue (fuseflow-pool.<pool>) and the consumer group, so the three can
+        // never diverge.
+        this.poolName = blankToDefault(properties.pool(), "default");
+        this.concurrency = properties.concurrency();
         this.registerRetries = properties.registerRetries() != null ? properties.registerRetries() : 10;
         this.registerRetryDelay = properties.registerRetryDelay() != null
                 ? properties.registerRetryDelay() : Duration.ofSeconds(2);
@@ -110,9 +115,9 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
     private void registerWithRetry() {
         for (int attempt = 1; attempt <= Math.max(1, registerRetries); attempt++) {
             try {
-                registryClient.register(id, host, capacity, activityRegistry.names());
-                log.info("Worker {} registered (host={}, capacity={}) with activities {}",
-                        id, host, capacity, activityRegistry.names());
+                registryClient.register(id, host, activityRegistry.names(), poolName, concurrency);
+                log.info("Worker {} registered (host={}, pool={}) with activities {}",
+                        id, host, poolName, activityRegistry.names());
                 return;
             } catch (Exception ex) {
                 log.warn("Worker registration attempt {}/{} failed: {}", attempt, registerRetries,
@@ -128,12 +133,12 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
 
     private void heartbeat() {
         try {
-            registryClient.heartbeat(id, capacity);
+            registryClient.heartbeat(id);
         } catch (Exception ex) {
             // Registry unreachable, or the worker was removed (404): re-register to revive.
             log.warn("Heartbeat failed for worker {}: {}", id, ex.getMessage());
             try {
-                registryClient.register(id, host, capacity, activityRegistry.names());
+                registryClient.register(id, host, activityRegistry.names(), poolName, concurrency);
             } catch (Exception ignored) {
                 // Will retry on the next heartbeat.
             }

@@ -8,9 +8,10 @@ import java.util.UUID;
 public record WorkerResponse(
         UUID id,
         String host,
-        int capacity,
         String status,
         List<String> activities,
+        String poolName,
+        Integer concurrency,
         Instant lastHeartbeatAt,
         long version,
         Instant createdAt,

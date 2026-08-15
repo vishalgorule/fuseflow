@@ -1,21 +1,27 @@
 package io.fuseflow.engine.dispatch;
 
-import io.fuseflow.common.correlation.CorrelationId;
+import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.common.messaging.ActivityTask;
+import io.fuseflow.engine.registry.PoolRoutingTable;
+import io.fuseflow.engine.repository.EventStore;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.kafka.core.KafkaTemplate;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
+import org.mockito.ArgumentMatchers;
+
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,40 +29,43 @@ class KafkaTaskDispatcherTest {
 
     private final KafkaTemplate<String, String> kafkaTemplate = mock(KafkaTemplate.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final KafkaTaskDispatcher dispatcher =
-            new KafkaTaskDispatcher(kafkaTemplate, objectMapper, "activity-dispatch");
+    private final PoolRoutingTable routingTable = new PoolRoutingTable("fuseflow-pool");
+    private final EventStore eventStore = mock(EventStore.class);
 
-    @BeforeEach
-    void setUp() {
-        when(kafkaTemplate.send(any(ProducerRecord.class)))
-                .thenAnswer(inv -> CompletableFuture.completedFuture(null));
+    private static WorkerResponse worker(String pool, String... activities) {
+        Instant now = Instant.now();
+        return new WorkerResponse(UUID.randomUUID(), "host", "ONLINE", List.of(activities),
+                pool, 8, now, 0, now, now);
     }
 
     @Test
-    void publishesTaskAsJsonKeyedByTaskIdWithCorrelationHeader() throws Exception {
-        ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "resizeImage", "{\"k\":1}", 1);
+    void publishesToTheResolvedPoolTopic() throws Exception {
+        routingTable.seed(List.of(worker("media", "resizeImage")));
+        KafkaTaskDispatcher dispatcher =
+                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore);
+        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, String>>any()))
+                .thenAnswer(inv -> CompletableFuture.completedFuture(null));
+        ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "resizeImage", null, 1);
 
         dispatcher.dispatch(task);
 
         ArgumentCaptor<ProducerRecord<String, String>> captor = ArgumentCaptor.forClass(ProducerRecord.class);
         verify(kafkaTemplate).send(captor.capture());
-        ProducerRecord<String, String> record = captor.getValue();
-        assertThat(record.topic()).isEqualTo("activity-dispatch");
-        assertThat(record.key()).isEqualTo("b");
-        assertThat(objectMapper.readValue(record.value(), ActivityTask.class)).isEqualTo(task);
-        assertThat(record.headers().lastHeader(CorrelationId.HEADER)).isNotNull();
+        assertThat(captor.getValue().topic()).isEqualTo("fuseflow-pool.media");
+        // The payload is the task itself (wire contract unchanged).
+        assertThat(captor.getValue().value()).contains("\"activityName\":\"resizeImage\"");
+        verify(eventStore, never()).append(any(), any(), any());
     }
 
     @Test
-    void neverThrowsWhenBrokerSendFails() {
-        when(kafkaTemplate.send(any(ProducerRecord.class))).thenAnswer(inv -> {
-            CompletableFuture<Void> failed = new CompletableFuture<>();
-            failed.completeExceptionally(new RuntimeException("broker down"));
-            return failed;
-        });
+    void unroutableTaskStaysScheduledWithDiagnosticEvent() {
+        KafkaTaskDispatcher dispatcher =
+                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore);
+        ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "noSuchActivity", null, 1);
 
-        assertThatCode(() -> dispatcher.dispatch(
-                new ActivityTask(UUID.randomUUID(), "a", "actA", null, 1)))
-                .doesNotThrowAnyException();
+        dispatcher.dispatch(task);
+
+        verify(kafkaTemplate, never()).send(ArgumentMatchers.<ProducerRecord<String, String>>any());
+        verify(eventStore).append(eq(task.executionId()), eq("ActivityUnroutable"), any());
     }
 }

@@ -27,8 +27,8 @@ public class WorkflowExecutionRepository {
 
     public void insert(WorkflowExecution execution) {
         jdbc.sql("""
-                        INSERT INTO %s (id, workflow_id, workflow_name, definition_version, input, status, created_at, updated_at, started_at)
-                        VALUES (:id, :workflowId, :workflowName, :definitionVersion, CAST(:input AS jsonb), :status, :createdAt, :updatedAt, :startedAt)
+                        INSERT INTO %s (id, workflow_id, workflow_name, definition_version, input, status, shard, created_at, updated_at, started_at)
+                        VALUES (:id, :workflowId, :workflowName, :definitionVersion, CAST(:input AS jsonb), :status, :shard, :createdAt, :updatedAt, :startedAt)
                         """.formatted(TABLE))
                 .param("id", execution.id())
                 .param("workflowId", execution.workflowId())
@@ -36,18 +36,21 @@ public class WorkflowExecutionRepository {
                 .param("definitionVersion", execution.definitionVersion())
                 .param("input", execution.input())
                 .param("status", execution.status().name())
+                .param("shard", execution.shard())
                 .param("createdAt", Timestamp.from(execution.createdAt()))
                 .param("updatedAt", Timestamp.from(execution.updatedAt()))
                 .param("startedAt", Timestamp.from(execution.startedAt()))
                 .update();
     }
 
+    private static final String SELECT_COLUMNS =
+            "id, workflow_id, workflow_name, definition_version, input, output, status, version,"
+                    + " created_at, updated_at, started_at, completed_at, shard";
+
     public Optional<WorkflowExecution> findById(UUID id) {
         return jdbc.sql("""
-                        SELECT id, workflow_id, workflow_name, definition_version, input, output, status, version,
-                               created_at, updated_at, started_at, completed_at
-                        FROM %s WHERE id = :id
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE id = :id
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("id", id)
                 .query(this::mapRow)
                 .optional();
@@ -55,21 +58,36 @@ public class WorkflowExecutionRepository {
 
     public List<WorkflowExecution> findAll() {
         return jdbc.sql("""
-                        SELECT id, workflow_id, workflow_name, definition_version, input, output, status, version,
-                               created_at, updated_at, started_at, completed_at
-                        FROM %s ORDER BY created_at DESC, id
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s ORDER BY created_at DESC, id
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .query(this::mapRow)
                 .list();
     }
 
-    /** Used by boot-time recovery to re-drive executions that were RUNNING when the engine stopped. */
+    /**
+     * Boot-time recovery source, scoped to this instance's shards (Phase 5 engine HA): each
+     * engine instance recovers only the RUNNING executions on the shards it owns, so N
+     * instances never double-dispatch the same execution. Pass the full shard set (or use
+     * {@link #findByStatus}) when a single instance owns everything.
+     */
+    public List<WorkflowExecution> findByStatusInShards(WorkflowStatus status, java.util.Set<Integer> shards) {
+        if (shards == null || shards.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("""
+                        SELECT %s FROM %s WHERE status = :status AND shard IN (:shards) ORDER BY created_at
+                        """.formatted(SELECT_COLUMNS, TABLE))
+                .param("status", status.name())
+                .param("shards", shards)
+                .query(this::mapRow)
+                .list();
+    }
+
+    /** Backward-compatible full-scan recovery source (single-engine deployments). */
     public List<WorkflowExecution> findByStatus(WorkflowStatus status) {
         return jdbc.sql("""
-                        SELECT id, workflow_id, workflow_name, definition_version, input, output, status, version,
-                               created_at, updated_at, started_at, completed_at
-                        FROM %s WHERE status = :status ORDER BY created_at
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE status = :status ORDER BY created_at
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("status", status.name())
                 .query(this::mapRow)
                 .list();
@@ -120,6 +138,7 @@ public class WorkflowExecutionRepository {
                 rs.getTimestamp("created_at").toInstant(),
                 rs.getTimestamp("updated_at").toInstant(),
                 rs.getTimestamp("started_at").toInstant(),
-                completedAt == null ? null : completedAt.toInstant());
+                completedAt == null ? null : completedAt.toInstant(),
+                rs.getInt("shard"));
     }
 }

@@ -59,16 +59,15 @@ class WorkerRegistryIntegrationTest {
 
     // ---------------------------------------------------------------- helpers
 
-    private static String registerBody(String id, String host, Integer capacity, String activitiesJson) {
-        String capacityJson = capacity == null ? "" : "\"capacity\": " + capacity + ",";
-        return "{\"id\": \"" + id + "\", \"host\": \"" + host + "\", " + capacityJson
-                + "\"activities\": " + activitiesJson + "}";
+    private static String registerBody(String id, String host, String activitiesJson) {
+        return "{\"id\": \"" + id + "\", \"host\": \"" + host + "\","
+                + " \"activities\": " + activitiesJson + "}";
     }
 
     private String registerAndExtractId(String id, String host, String activitiesJson) throws Exception {
         String response = mockMvc.perform(post("/api/v1/workers")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(registerBody(id, host, null, activitiesJson)))
+                        .content(registerBody(id, host, activitiesJson)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return objectMapper.readTree(response).get("id").asText();
@@ -89,27 +88,23 @@ class WorkerRegistryIntegrationTest {
     @Order(1)
     @DirtiesContext
     void registersWorkerAndHeartbeats() throws Exception {
-        String body = registerBody(WORKER_ID.toString(), "worker-1", 4, "[\"resizeImage\", \"uploadImage\"]");
+        String body = registerBody(WORKER_ID.toString(), "worker-1", "[\"resizeImage\", \"uploadImage\"]");
         mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").value(WORKER_ID.toString()))
                 .andExpect(jsonPath("$.host").value("worker-1"))
-                .andExpect(jsonPath("$.capacity").value(4))
                 .andExpect(jsonPath("$.status").value("ONLINE"))
                 .andExpect(jsonPath("$.activities.length()").value(2))
                 .andExpect(jsonPath("$.activities[0]").value("resizeImage"))
                 .andExpect(jsonPath("$.lastHeartbeatAt").isNotEmpty());
         persistedWorkerId = WORKER_ID.toString();
 
-        // Heartbeat refreshes liveness and can update capacity.
-        mockMvc.perform(post("/api/v1/workers/{id}/heartbeat", persistedWorkerId)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"capacity\": 2}"))
+        // Heartbeat refreshes liveness.
+        mockMvc.perform(post("/api/v1/workers/{id}/heartbeat", persistedWorkerId))
                 .andExpect(status().isNoContent());
 
         mockMvc.perform(get("/api/v1/workers/{id}", persistedWorkerId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.capacity").value(2))
                 .andExpect(jsonPath("$.status").value("ONLINE"))
                 .andExpect(jsonPath("$.lastHeartbeatAt").isNotEmpty());
     }
@@ -134,11 +129,10 @@ class WorkerRegistryIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         long versionBefore = objectMapper.readTree(before).get("version").asLong();
 
-        String body = registerBody(persistedWorkerId, "worker-2", 8, "[\"downloadImage\", \"resizeImage\"]");
+        String body = registerBody(persistedWorkerId, "worker-2", "[\"downloadImage\", \"resizeImage\"]");
         mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk()) // 200, not 201: this is an update
                 .andExpect(jsonPath("$.host").value("worker-2"))
-                .andExpect(jsonPath("$.capacity").value(8))
                 .andExpect(jsonPath("$.status").value("ONLINE"))
                 .andExpect(jsonPath("$.version").value(versionBefore + 1))
                 .andExpect(jsonPath("$.activities.length()").value(2))
@@ -147,12 +141,11 @@ class WorkerRegistryIntegrationTest {
 
     @Test
     @Order(4)
-    void listsWorkersAndDefaultsCapacityToOne() throws Exception {
+    void listsWorkers() throws Exception {
         UUID other = UUID.fromString("20000000-0000-0000-0000-000000000002");
         mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON)
-                        .content(registerBody(other.toString(), "worker-3", null, "[\"compressImage\"]")))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.capacity").value(1)); // omitted capacity defaults to 1
+                        .content(registerBody(other.toString(), "worker-3", "[\"compressImage\"]")))
+                .andExpect(status().isCreated());
 
         String response = mockMvc.perform(get("/api/v1/workers"))
                 .andExpect(status().isOk())
@@ -224,11 +217,6 @@ class WorkerRegistryIntegrationTest {
                         .content("{\"id\": \"" + UUID.randomUUID() + "\", \"host\": \"h\", \"activities\": []}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0].field").value("activities"));
-        // Capacity below 1.
-        mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"id\": \"" + UUID.randomUUID() + "\", \"host\": \"h\", \"capacity\": 0, \"activities\": [\"actA\"]}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[0].field").value("capacity"));
         // Malformed body.
         mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON).content("{not json"))
                 .andExpect(status().isBadRequest())
@@ -236,14 +224,37 @@ class WorkerRegistryIntegrationTest {
     }
 
     @Test
-    @Order(9)
-    void rejectsInvalidHeartbeatAndInvalidId() throws Exception {
-        mockMvc.perform(post("/api/v1/workers/{id}/heartbeat", persistedWorkerId)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"capacity\": 0}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("invalid_heartbeat"));
+    @Order(10)
+    void registersPoolIdentity() throws Exception {
+        UUID pooled = UUID.fromString("20000000-0000-0000-0000-000000000010");
+        mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\": \"" + pooled + "\", \"host\": \"pooled\","
+                                + " \"poolName\": \"media\", \"concurrency\": 8,"
+                                + " \"activities\": [\"resizeImage\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.poolName").value("media"))
+                .andExpect(jsonPath("$.concurrency").value(8));
 
+        // Pool identity is optional — omitted fields default to the 'default' pool.
+        mockMvc.perform(post("/api/v1/workers").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\": \"" + UUID.randomUUID() + "\", \"host\": \"plain\","
+                                + " \"activities\": [\"actA\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.poolName").value("default"));
+    }
+
+    @Test
+    @Order(9)
+    void exposesClusterConfigForBrokerDiscovery() throws Exception {
+        // The single discovery endpoint workers call to learn the broker (SDK-owned transport).
+        mockMvc.perform(get("/api/v1/config"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bootstrapServers").value("localhost:9092"));
+    }
+
+    @Test
+    @Order(9)
+    void rejectsInvalidId() throws Exception {
         mockMvc.perform(get("/api/v1/workers/not-a-uuid"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("bad_request"));

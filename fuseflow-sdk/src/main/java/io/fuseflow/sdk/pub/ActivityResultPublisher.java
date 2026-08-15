@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Publishes the worker's activity signals ({@code STARTED} / {@code COMPLETED} / {@code FAILED})
- * to the {@code activity-results} topic. Keyed by task id (ordering within a partition) and
+ * to the {@code activity-results} queue. Keyed by task id (ordering within a partition) and
  * stamped with the correlation ID that travelled with the dispatch message.
  */
 public class ActivityResultPublisher {
@@ -21,19 +21,19 @@ public class ActivityResultPublisher {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
-    private final String topic;
+    private final String queue;
 
     public ActivityResultPublisher(KafkaTemplate<String, String> kafkaTemplate,
                                    ObjectMapper objectMapper,
-                                   String topic) {
+                                   String queue) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
-        this.topic = topic;
+        this.queue = queue;
     }
 
     public void publish(ActivityResultMessage message) {
         try {
-            ProducerRecord<String, String> record = new ProducerRecord<>(topic, message.taskId(),
+            ProducerRecord<String, String> record = new ProducerRecord<>(queue, message.taskId(),
                     objectMapper.writeValueAsString(message));
             String correlationId = CorrelationId.get();
             if (correlationId != null) {

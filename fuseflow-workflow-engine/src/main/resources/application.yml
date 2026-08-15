@@ -26,23 +26,38 @@ spring:
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      # Phase 5 engine HA: ≥ number of engine instances so every instance can hold partitions.
+      # activity-results must have ≥ that many partitions (FUSEFLOW_KAFKA_TOPICS_PARTITIONS).
+      concurrency: ${FUSEFLOW_ENGINE_LISTENER_CONCURRENCY:1}
 
   jackson:
     default-property-inclusion: non_null
 
-# Phase 4 (default): Kafka transport — the engine publishes activity tasks to activity-dispatch
-# and consumes results from activity-results; SDK workers execute the activities.
+# Phase 5 (default): Kafka transport with pool-based routing — the engine publishes each task
+# to exactly one pool topic (fuseflow-pool.<poolName>) and consumes results from activity-results.
 fuseflow:
   engine:
     # kafka (default) | in-memory. In-memory keeps the Phase 2 demo auto-completer for tests and
     # for running a workflow to completion without any worker or broker.
     dispatch-mode: ${FUSEFLOW_ENGINE_DISPATCH_MODE:kafka}
+    # Phase 5 engine HA: fixed shard count (identical on every instance) + the shards this
+    # instance boot-recovers (all | 0-3 | 0,1,4). Split shards across instances for HA.
+    shards: ${FUSEFLOW_ENGINE_SHARDS:8}
+    owned-shards: ${FUSEFLOW_ENGINE_OWNED_SHARDS:all}
+    worker-events-group: ${FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP:fuseflow-engine-events}
+    # Partition ceiling per pool topic (min(declared concurrency, cap)).
+    pool-topic:
+      partition-cap: ${FUSEFLOW_ENGINE_POOL_PARTITION_CAP:16}
+  registry:
+    base-url: ${FUSEFLOW_REGISTRY_URL:http://localhost:8083}
   kafka:
     topic:
-      activity-dispatch: activity-dispatch
       activity-results: activity-results
       workflow-events: workflow-events
+      worker-events: worker-events
       dead-letter: dead-letter
+      pool-prefix: fuseflow-pool
     topics:
       partitions: 1
       replicas: 1

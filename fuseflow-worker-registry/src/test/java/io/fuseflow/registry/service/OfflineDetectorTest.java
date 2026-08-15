@@ -33,7 +33,7 @@ class OfflineDetectorTest {
 
     private static Worker worker(UUID id, WorkerStatus status, Instant lastHeartbeatAt) {
         Instant now = Instant.now();
-        return new Worker(id, "host", 1, status, lastHeartbeatAt, 0, now, now);
+        return new Worker(id, "host", status, lastHeartbeatAt, 0, now, now);
     }
 
     @Test

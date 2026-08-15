@@ -2,35 +2,36 @@ spring:
   application:
     name: fuseflow-sample-workers
 
-  kafka:
-    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      properties:
-        max.block.ms: 5000
-    consumer:
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-
+# The Kafka transport is fully owned by the SDK and needs no configuration here: serializers,
+# offsets and internal topic names are SDK internals, and the broker address is discovered from
+# the registry (GET /api/v1/config) — discovery waits for the registry, retrying every 5s, with
+# no fallback. The only endpoint a worker declares is the registry below.
 fuseflow:
   worker:
     enabled: true
     # Stable identity across restarts — the registry upserts on the client-supplied id.
     id: ${FUSEFLOW_WORKER_ID:22220000-0000-0000-0000-000000000001}
     host: ${FUSEFLOW_WORKER_HOST:localhost}
-    capacity: 2
     heartbeat-interval: 5s
-    group-id: fuseflow-workers
+    # Phase 5: the pool this worker joins. Instances of the same pool share its dispatch
+    # queue (fuseflow-pool.<pool>) and consumer group for parallelism; different pools are
+    # routed to independently.
+    pool: ${FUSEFLOW_WORKER_POOL:fuseflow-workers}
+    # Pool-level declared parallelism — drives the pool queue's partition count (Phase 5).
+    concurrency: ${FUSEFLOW_WORKER_CONCURRENCY:8}
     register-retries: 10
     register-retry-delay: 2s
+  # Per-activity enable flags: a fleet instance can advertise/execute only a subset of the
+  # five activities (the io pool runs download/upload; the media pool runs
+  # resize/watermark/compress). Default all-on — `make workers` is unchanged.
+  sample:
+    enable-download: ${FUSEFLOW_SAMPLE_ENABLE_DOWNLOAD:true}
+    enable-resize: ${FUSEFLOW_SAMPLE_ENABLE_RESIZE:true}
+    enable-watermark: ${FUSEFLOW_SAMPLE_ENABLE_WATERMARK:true}
+    enable-compress: ${FUSEFLOW_SAMPLE_ENABLE_COMPRESS:true}
+    enable-upload: ${FUSEFLOW_SAMPLE_ENABLE_UPLOAD:true}
   registry:
     base-url: ${FUSEFLOW_REGISTRY_URL:http://localhost:8083}
-  kafka:
-    topic:
-      activity-dispatch: activity-dispatch
-      activity-results: activity-results
 
 server:
   port: 8090

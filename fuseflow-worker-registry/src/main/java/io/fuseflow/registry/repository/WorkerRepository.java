@@ -33,7 +33,7 @@ public class WorkerRepository {
     private static final String HEARTBEAT_TABLE = "registry.worker_heartbeat";
 
     private static final String WORKER_COLUMNS =
-            "id, host, capacity, status, last_heartbeat_at, version, created_at, updated_at";
+            "id, host, status, last_heartbeat_at, version, created_at, updated_at, pool_name, concurrency";
 
     private final JdbcClient jdbc;
 
@@ -44,63 +44,69 @@ public class WorkerRepository {
     public void insertWorker(Worker worker) {
         jdbc.sql("""
                         INSERT INTO %s (%s)
-                        VALUES (:id, :host, :capacity, :status, :lastHeartbeatAt, :version, :createdAt, :updatedAt)
+                        VALUES (:id, :host, :status, :lastHeartbeatAt, :version, :createdAt, :updatedAt,
+                                :poolName, :concurrency)
                         """.formatted(WORKER_TABLE, WORKER_COLUMNS))
                 .param("id", worker.id())
                 .param("host", worker.host())
-                .param("capacity", worker.capacity())
                 .param("status", worker.status().name())
                 .param("lastHeartbeatAt", Timestamp.from(worker.lastHeartbeatAt()))
                 .param("version", worker.version())
                 .param("createdAt", Timestamp.from(worker.createdAt()))
                 .param("updatedAt", Timestamp.from(worker.updatedAt()))
+                .param("poolName", worker.poolName())
+                .param("concurrency", worker.concurrency(), Types.INTEGER)
                 .update();
     }
 
     /**
-     * Re-registration: the worker is alive again, so refresh host/capacity, revive to ONLINE
-     * and touch the heartbeat. Optimistic update (returns false on version conflict).
+     * Re-registration: the worker is alive again, so refresh host, revive to ONLINE and touch
+     * the heartbeat. Optimistic update (returns false on version conflict).
      */
-    public boolean updateOnRegister(UUID id, String host, int capacity, long expectedVersion) {
+    public boolean updateOnRegister(UUID id, String host, String poolName,
+                                    Integer concurrency, long expectedVersion) {
+        // Pool identity refreshes when the worker declares it; otherwise it is preserved
+        // (COALESCE) so legacy clients never silently reset a pool to the default.
         return jdbc.sql("""
                         UPDATE %s
-                        SET host = :host, capacity = :capacity, status = 'ONLINE',
+                        SET host = :host, status = 'ONLINE',
+                            pool_name = COALESCE(:poolName, pool_name),
+                            concurrency = COALESCE(:concurrency, concurrency),
                             last_heartbeat_at = :now, version = version + 1, updated_at = :now
                         WHERE id = :id AND version = :expectedVersion
                         """.formatted(WORKER_TABLE))
                 .param("id", id)
                 .param("host", host)
-                .param("capacity", capacity)
+                .param("poolName", poolName, Types.VARCHAR)
+                .param("concurrency", concurrency, Types.INTEGER)
                 .param("now", Timestamp.from(Instant.now()))
                 .param("expectedVersion", expectedVersion)
                 .update() == 1;
     }
 
     /**
-     * Heartbeat touch: unconditional by design (see class javadoc). Optionally refreshes the
-     * reported capacity. Returns the number of rows updated (0 → worker does not exist).
+     * Heartbeat touch: unconditional by design (see class javadoc). Returns the number of rows
+     * updated (0 → worker does not exist).
      */
-    public int touchHeartbeat(UUID id, Integer capacity) {
+    public int touchHeartbeat(UUID id) {
         return jdbc.sql("""
                         UPDATE %s
-                        SET status = 'ONLINE', capacity = COALESCE(:capacity, capacity),
+                        SET status = 'ONLINE',
                             last_heartbeat_at = :now, version = version + 1, updated_at = :now
                         WHERE id = :id
                         """.formatted(WORKER_TABLE))
                 .param("id", id)
-                .param("capacity", capacity, Types.INTEGER)
                 .param("now", Timestamp.from(Instant.now()))
                 .update();
     }
 
     /** Appends a heartbeat to the append-only log (purged by the cleanup job). */
-    public void appendHeartbeat(UUID id, Integer capacity) {
+    public void appendHeartbeat(UUID id) {
         jdbc.sql("""
-                        INSERT INTO %s (worker_id, capacity, received_at)
-                        VALUES (:workerId, :capacity, :receivedAt)
+                        INSERT INTO %s (worker_id, received_at)
+                        VALUES (:workerId, :receivedAt)
                         """.formatted(HEARTBEAT_TABLE))
                 .param("workerId", id)
-                .param("capacity", capacity, Types.INTEGER)
                 .param("receivedAt", Timestamp.from(Instant.now()))
                 .update();
     }
@@ -217,12 +223,13 @@ public class WorkerRepository {
         return new Worker(
                 rs.getObject("id", UUID.class),
                 rs.getString("host"),
-                rs.getInt("capacity"),
                 WorkerStatus.valueOf(rs.getString("status")),
                 rs.getTimestamp("last_heartbeat_at").toInstant(),
                 rs.getLong("version"),
                 rs.getTimestamp("created_at").toInstant(),
-                rs.getTimestamp("updated_at").toInstant());
+                rs.getTimestamp("updated_at").toInstant(),
+                rs.getString("pool_name"),
+                rs.getObject("concurrency", Integer.class));
     }
 
     private WorkerActivity mapActivity(ResultSet rs, int rowNum) throws SQLException {

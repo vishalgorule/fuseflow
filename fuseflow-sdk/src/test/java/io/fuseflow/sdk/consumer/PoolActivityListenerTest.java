@@ -13,16 +13,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
-class ActivityDispatchListenerTest {
+class PoolActivityListenerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ActivityRegistry registry = new ActivityRegistry();
     private final FuseFlowWorker worker = mock(FuseFlowWorker.class);
-    private final ActivityDispatchListener listener =
-            new ActivityDispatchListener(objectMapper, registry, worker);
+    private final PoolActivityListener listener =
+            new PoolActivityListener(objectMapper, registry, worker);
 
     private static ConsumerRecord<String, String> record(String json) {
-        return new ConsumerRecord<>("activity-dispatch", 0, 0L, "b", json);
+        return new ConsumerRecord<>("fuseflow-pool.default", 0, 0L, "b", json);
     }
 
     @Test

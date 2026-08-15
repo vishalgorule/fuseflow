@@ -1,7 +1,6 @@
 package io.fuseflow.registry.service;
 
 import io.fuseflow.common.dto.ApiError;
-import io.fuseflow.common.dto.HeartbeatRequest;
 import io.fuseflow.common.dto.WorkerRequest;
 import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.common.exception.ApiException;
@@ -26,9 +25,9 @@ import java.util.stream.Collectors;
  * Register, heartbeat, deregister and discover workers (Phase 3, FR-4 / FR-12).
  *
  * <p>Registration is an upsert keyed on the client-supplied worker id: a worker restarts and
- * re-registers on every boot, so an existing id updates host/capacity/activities and revives
- * the worker to ONLINE instead of conflicting. Heartbeats are lightweight "touch" writes; the
- * scheduled {@link OfflineDetector} derives liveness from {@code last_heartbeat_at}.
+ * re-registers on every boot, so an existing id updates host/activities and revives the worker
+ * to ONLINE instead of conflicting. Heartbeats are lightweight "touch" writes; the scheduled
+ * {@link OfflineDetector} derives liveness from {@code last_heartbeat_at}.
  */
 @Service
 public class WorkerService {
@@ -50,37 +49,34 @@ public class WorkerService {
         if (!errors.isEmpty()) {
             throw ApiException.badRequest("invalid_worker_request", "Worker registration is invalid", errors);
         }
-        int capacity = request.capacity() == null ? 1 : request.capacity();
+        String poolName = request.poolName() == null || request.poolName().isBlank()
+                ? "default" : request.poolName();
         Instant now = Instant.now();
 
         Worker existing = workerRepository.findById(request.id()).orElse(null);
         if (existing == null) {
-            workerRepository.insertWorker(new Worker(request.id(), request.host(), capacity,
-                    WorkerStatus.ONLINE, now, 0, now, now));
+            workerRepository.insertWorker(new Worker(request.id(), request.host(),
+                    WorkerStatus.ONLINE, now, 0, now, now, poolName, request.concurrency()));
             workerRepository.replaceActivities(request.id(), request.activities());
-            workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, capacity));
+            workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, poolName));
             return new WorkerRegistration(get(request.id()), true);
         }
-        if (!workerRepository.updateOnRegister(request.id(), request.host(), capacity, existing.version())) {
+        if (!workerRepository.updateOnRegister(request.id(), request.host(), poolName,
+                request.concurrency(), existing.version())) {
             throw ApiException.conflict("worker_version_conflict",
                     "Worker '" + request.id() + "' was modified concurrently; retry");
         }
         workerRepository.replaceActivities(request.id(), request.activities());
-        workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, capacity));
+        workerEventPublisher.publish(request.id(), "worker_registered", eventPayload(request, poolName));
         return new WorkerRegistration(get(request.id()), false);
     }
 
     @Transactional
-    public void heartbeat(UUID id, HeartbeatRequest request) {
-        List<ApiError.FieldError> errors = workerValidator.validateHeartbeat(request);
-        if (!errors.isEmpty()) {
-            throw ApiException.badRequest("invalid_heartbeat", "Heartbeat is invalid", errors);
-        }
-        Integer capacity = request == null ? null : request.capacity();
-        if (workerRepository.touchHeartbeat(id, capacity) == 0) {
+    public void heartbeat(UUID id) {
+        if (workerRepository.touchHeartbeat(id) == 0) {
             throw ApiException.notFound("worker_not_found", "Worker '" + id + "' does not exist");
         }
-        workerRepository.appendHeartbeat(id, capacity);
+        workerRepository.appendHeartbeat(id);
     }
 
     @Transactional
@@ -108,10 +104,11 @@ public class WorkerService {
         return toResponses(workerRepository.findByActivity(activityName));
     }
 
-    private static Map<String, Object> eventPayload(WorkerRequest request, int capacity) {
+    private static Map<String, Object> eventPayload(WorkerRequest request, String poolName) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("host", request.host());
-        payload.put("capacity", capacity);
+        payload.put("poolName", poolName);
+        payload.put("concurrency", request.concurrency());
         payload.put("activities", request.activities());
         return payload;
     }
@@ -140,9 +137,10 @@ public class WorkerService {
         return new WorkerResponse(
                 worker.id(),
                 worker.host(),
-                worker.capacity(),
                 worker.status().name(),
                 List.copyOf(activities),
+                worker.poolName(),
+                worker.concurrency(),
                 worker.lastHeartbeatAt(),
                 worker.version(),
                 worker.createdAt(),

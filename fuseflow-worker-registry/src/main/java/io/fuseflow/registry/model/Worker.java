@@ -7,10 +7,17 @@ import java.util.UUID;
 public record Worker(
         UUID id,
         String host,
-        int capacity,           // max concurrent activities the worker can run
         WorkerStatus status,
         Instant lastHeartbeatAt,
         long version,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        String poolName,        // the worker pool (capability group) this worker joins
+        Integer concurrency) {  // pool-level declared parallelism (drives pool-topic partitions)
+
+    /** Backward-compatible constructor (pool defaults to {@code default}). */
+    public Worker(UUID id, String host, WorkerStatus status,
+                  Instant lastHeartbeatAt, long version, Instant createdAt, Instant updatedAt) {
+        this(id, host, status, lastHeartbeatAt, version, createdAt, updatedAt, "default", null);
+    }
 }

@@ -1,7 +1,6 @@
 package io.fuseflow.registry.validation;
 
 import io.fuseflow.common.dto.ApiError;
-import io.fuseflow.common.dto.HeartbeatRequest;
 import io.fuseflow.common.dto.WorkerRequest;
 import org.springframework.stereotype.Component;
 
@@ -11,9 +10,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Validates worker registration payloads (FR-4). Structural checks only: identity, host,
- * capacity and a non-empty, non-duplicate activity list. Whether a worker capable of an
- * activity exists is a schedule-time concern of the engine — the registry accepts any names.
+ * Validates worker registration payloads (FR-4). Structural checks only: identity, host and a
+ * non-empty, non-duplicate activity list. Whether a worker capable of an activity exists is a
+ * schedule-time concern of the engine — the registry accepts any names.
  */
 @Component
 public final class WorkerValidator {
@@ -31,8 +30,11 @@ public final class WorkerValidator {
         if (request.host() == null || request.host().isBlank()) {
             errors.add(new ApiError.FieldError("host", "host is required"));
         }
-        if (request.capacity() != null && request.capacity() < 1) {
-            errors.add(new ApiError.FieldError("capacity", "capacity must be at least 1"));
+        if (request.poolName() != null && request.poolName().isBlank()) {
+            errors.add(new ApiError.FieldError("poolName", "pool name must not be blank"));
+        }
+        if (request.concurrency() != null && request.concurrency() < 1) {
+            errors.add(new ApiError.FieldError("concurrency", "concurrency must be at least 1"));
         }
 
         List<String> activities = request.activities();
@@ -51,13 +53,5 @@ public final class WorkerValidator {
             }
         }
         return List.copyOf(errors);
-    }
-
-    /** Returns the field-level errors for a heartbeat request; empty = valid. */
-    public List<ApiError.FieldError> validateHeartbeat(HeartbeatRequest request) {
-        if (request != null && request.capacity() != null && request.capacity() < 1) {
-            return List.of(new ApiError.FieldError("capacity", "capacity must be at least 1"));
-        }
-        return List.of();
     }
 }

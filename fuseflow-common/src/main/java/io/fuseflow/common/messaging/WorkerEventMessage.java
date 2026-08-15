@@ -10,7 +10,7 @@ import java.util.UUID;
  * frequency).
  *
  * @param eventType e.g. worker_registered, worker_deregistered, worker_offline
- * @param payload   JSON-able key/value detail (host, capacity, activities, …)
+ * @param payload   JSON-able key/value detail (host, poolName, concurrency, activities, …)
  */
 public record WorkerEventMessage(
         UUID workerId,
