@@ -1,9 +1,11 @@
-package io.fuseflow.definition.dto;
+package io.fuseflow.common.dto;
 
 import java.util.List;
 
 /**
- * Request body for registering or replacing a workflow definition.
+ * Request body for registering or replacing a workflow definition. Shared wire contract
+ * (Phase 6): the SDK's {@code @Workflow}/{@code @Step} scanner builds one of these and the
+ * definition service validates + persists it — the two sides cannot drift.
  *
  * @param name        unique workflow name
  * @param description optional human-readable description

@@ -11,11 +11,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies the sample workers application context boots and that the SDK's Kafka transport
  * defaults (shipped via the SDK's {@code EnvironmentPostProcessor}) are visible in the real
  * application environment — the worker package declares no {@code spring.kafka.*} config and no
- * broker address (that comes from registry discovery at runtime). The worker runtime is disabled
- * so the test needs no Kafka or registry; the full stack is exercised via the manual demo
- * (README) and the SDK's own unit tests.
+ * broker address (that comes from registry discovery at runtime). The worker runtime and
+ * workflow registration are disabled so the test needs no Kafka, registry or definition
+ * service; the full stack is exercised via the manual demo (README) and the SDK's own tests.
  */
-@SpringBootTest(properties = "fuseflow.worker.enabled=false")
+@SpringBootTest(properties = {"fuseflow.worker.enabled=false", "fuseflow.workflow.enabled=false"})
 class SampleWorkersApplicationTests {
 
     @Autowired

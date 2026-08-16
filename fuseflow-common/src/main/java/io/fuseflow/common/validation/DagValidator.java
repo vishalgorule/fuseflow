@@ -1,8 +1,7 @@
-package io.fuseflow.definition.validation;
+package io.fuseflow.common.validation;
 
 import io.fuseflow.common.dto.ApiError;
-import io.fuseflow.definition.dto.WorkflowRequest;
-import org.springframework.stereotype.Component;
+import io.fuseflow.common.dto.WorkflowRequest;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,7 +13,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Structural validator for workflow definitions (FR-1).
+ * Structural validator for workflow definitions (FR-1). Lives in {@code fuseflow-common} so
+ * the definition service, the SDK's runtime {@code WorkflowScanner} and the SDK's
+ * compile-time annotation processor all share one implementation (zero drift).
  *
  * <p>Validates task ids/activities and the DAG shape: duplicate tasks, dangling
  * dependencies and cycles are rejected. Activity <em>capability</em> (is a worker
@@ -22,7 +23,6 @@ import java.util.Set;
  * dynamically, so that check happens at schedule time in the engine (see the design
  * note in docs/implementation-plan.md, Phase 1).
  */
-@Component
 public final class DagValidator {
 
     /** Returns the field-level errors for a workflow request; empty = valid. */

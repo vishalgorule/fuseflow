@@ -286,4 +286,20 @@ class WorkflowControllerIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("bad_request"));
     }
+
+    @Test
+    @Order(14)
+    void looksUpByName() throws Exception {
+        // Phase 6: ?name=X lookup backs the SDK's idempotent upsert. The image-processing
+        // workflow registered by test 1 is still present (names are unique → 1 result).
+        mockMvc.perform(get("/api/v1/workflows").param("name", "image-processing"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(persistedWorkflowId))
+                .andExpect(jsonPath("$[0].tasks.length()").value(3));
+
+        mockMvc.perform(get("/api/v1/workflows").param("name", "does-not-exist"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
 }

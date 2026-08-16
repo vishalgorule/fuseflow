@@ -1,7 +1,7 @@
-package io.fuseflow.definition.validation;
+package io.fuseflow.common.validation;
 
 import io.fuseflow.common.dto.ApiError;
-import io.fuseflow.definition.dto.WorkflowRequest;
+import io.fuseflow.common.dto.WorkflowRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

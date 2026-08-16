@@ -12,7 +12,7 @@
 
     <artifactId>fuseflow-sdk</artifactId>
     <name>FuseFlow Worker SDK</name>
-    <description>Java Worker SDK — @Activity annotation + runtime (Phase 4)</description>
+    <description>Java Worker SDK — @Activity + @Workflow annotations + runtime (Phase 4/6)</description>
 
     <dependencies>
         <!-- Shared wire contract: activity task/result messages, registry DTOs, correlation ID. -->
@@ -46,4 +46,20 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- The SDK module itself defines no @Workflow classes, and its tests
+                         deliberately exercise invalid annotation scenarios at runtime, so
+                         compile-time processing is off here (it is ON for SDK consumers via
+                         the parent default). -->
+                    <proc>none</proc>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

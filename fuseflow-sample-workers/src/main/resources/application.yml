@@ -18,18 +18,25 @@ fuseflow:
     # routed to independently.
     pool: ${FUSEFLOW_WORKER_POOL:fuseflow-workers}
     # Pool-level declared parallelism — drives the pool queue's partition count (Phase 5).
-    concurrency: ${FUSEFLOW_WORKER_CONCURRENCY:8}
+    concurrency: ${FUSEFLOW_WORKER_CONCURRENCY:4}
     register-retries: 10
     register-retry-delay: 2s
-  # Per-activity enable flags: a fleet instance can advertise/execute only a subset of the
-  # five activities (the io pool runs download/upload; the media pool runs
-  # resize/watermark/compress). Default all-on — `make workers` is unchanged.
+  # Phase 6: annotation-defined workflows, both self-contained (@Activity methods are the
+  # steps). On by default — ImageProcessingWorkflow and OrderFulfillmentWorkflow are
+  # scanned, validated and registered with the definition service at boot.
+  workflow:
+    enabled: true
+    register-retries: 10
+    register-retry-delay: 2s
+  definition:
+    base-url: ${FUSEFLOW_DEFINITION_URL:http://localhost:8081}
+  # Workflow-level enable flags (Phase 6): a fleet instance advertises/executes the whole
+  # workflow's activities or none of them — heterogeneity is expressed per workflow, not per
+  # activity (the io pool runs image-processing; the media pool runs order-fulfillment).
+  # Default all-on — `make workers` is unchanged.
   sample:
-    enable-download: ${FUSEFLOW_SAMPLE_ENABLE_DOWNLOAD:true}
-    enable-resize: ${FUSEFLOW_SAMPLE_ENABLE_RESIZE:true}
-    enable-watermark: ${FUSEFLOW_SAMPLE_ENABLE_WATERMARK:true}
-    enable-compress: ${FUSEFLOW_SAMPLE_ENABLE_COMPRESS:true}
-    enable-upload: ${FUSEFLOW_SAMPLE_ENABLE_UPLOAD:true}
+    enable-image: ${FUSEFLOW_SAMPLE_ENABLE_IMAGE:true}
+    enable-order: ${FUSEFLOW_SAMPLE_ENABLE_ORDER:true}
   registry:
     base-url: ${FUSEFLOW_REGISTRY_URL:http://localhost:8083}
 

@@ -66,11 +66,49 @@ class ActivityScannerTest {
     }
 
     @Test
+    void derivesActivityNameFromMethodNameWhenValueBlank() throws Exception {
+        // Phase 6: blank @Activity value = activity name is the method name (Temporal-style).
+        try (AnnotationConfigApplicationContext context =
+                     new AnnotationConfigApplicationContext(MethodNameConfig.class)) {
+            ActivityRegistry registry = context.getBean(ActivityRegistry.class);
+            assertThat(registry.names()).containsExactly("refundOrder");
+            assertThat(registry.supports("refundOrder")).isTrue();
+        }
+    }
+
+    @Test
     void rejectsMethodsWithWrongSignature() {
         // The scanner's failure surfaces during context refresh (propagated directly).
         assertThatThrownBy(() -> new AnnotationConfigApplicationContext(BadConfig.class))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("must take a single ActivityContext");
+    }
+
+    static class MethodNameWorker {
+
+        @Activity
+        public Map<String, Object> refundOrder(ActivityContext ctx) {
+            return Map.of("refunded", true);
+        }
+    }
+
+    @Configuration
+    static class MethodNameConfig {
+
+        @Bean
+        MethodNameWorker methodNameWorker() {
+            return new MethodNameWorker();
+        }
+
+        @Bean
+        ActivityRegistry activityRegistry() {
+            return new ActivityRegistry();
+        }
+
+        @Bean
+        ActivityScanner activityScanner(ApplicationContext context, ActivityRegistry registry) {
+            return new ActivityScanner(context, registry);
+        }
     }
 
     @Configuration

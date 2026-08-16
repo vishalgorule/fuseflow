@@ -48,6 +48,16 @@ public class WorkflowDefinitionRepository {
                 .optional();
     }
 
+    public Optional<WorkflowDefinition> findByName(String name) {
+        return jdbc.sql("""
+                        SELECT id, name, description, version, created_at, updated_at
+                        FROM %s WHERE name = :name
+                        """.formatted(TABLE))
+                .param("name", name)
+                .query(this::mapRow)
+                .optional();
+    }
+
     public List<WorkflowDefinition> findAll() {
         return jdbc.sql("""
                         SELECT id, name, description, version, created_at, updated_at

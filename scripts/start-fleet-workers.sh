@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Phase 5: launch a heterogeneous worker fleet on pool-based routing.
+# Phase 5/6: launch a heterogeneous worker fleet on pool-based routing. Heterogeneity is
+# expressed per workflow (the annotation workflows are self-contained — see
+# fuseflow-sample-workers):
 #
-#   N "io"    workers  -> pool `io`    (downloadImage, uploadImage only)
-#   N "media" workers  -> pool `media` (resizeImage, watermarkImage, compressImage only)
+#   N "io"    workers  -> pool `io`    (image-processing workflow: download/resize/watermark/compress/upload)
+#   N "media" workers  -> pool `media` (order-fulfillment workflow: validate/charge/pack/ship/notify)
 #
 # Each pool gets its own consumer group (the pool name) and its own dispatch queue
 # (fuseflow-pool.<pool>), auto-provisioned by the engine with partitions = min(declared
@@ -50,18 +52,15 @@ launch() {
 }
 
 PORT=8100
-echo "=== launching $IO io worker(s) + $MEDIA media worker(s), concurrency=$THREADS ==="
+echo "=== launching $IO io worker(s) (image-processing) + $MEDIA media worker(s) (order-fulfillment), concurrency=$THREADS ==="
 for i in $(seq 1 "$IO"); do
     launch "$PORT" "io-$i" "/tmp/fuseflow-workers-io-$i.log" \
         "SERVER_PORT=$PORT" \
         "FUSEFLOW_WORKER_ID=33330000-0000-0000-0000-0000000000$(printf %02d "$i")" \
         "FUSEFLOW_WORKER_POOL=io" \
         "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
-        "FUSEFLOW_SAMPLE_ENABLE_DOWNLOAD=true" \
-        "FUSEFLOW_SAMPLE_ENABLE_UPLOAD=true" \
-        "FUSEFLOW_SAMPLE_ENABLE_RESIZE=false" \
-        "FUSEFLOW_SAMPLE_ENABLE_WATERMARK=false" \
-        "FUSEFLOW_SAMPLE_ENABLE_COMPRESS=false"
+        "FUSEFLOW_SAMPLE_ENABLE_IMAGE=true" \
+        "FUSEFLOW_SAMPLE_ENABLE_ORDER=false"
     PORT=$((PORT + 1))
 done
 for i in $(seq 1 "$MEDIA"); do
@@ -70,11 +69,8 @@ for i in $(seq 1 "$MEDIA"); do
         "FUSEFLOW_WORKER_ID=44440000-0000-0000-0000-0000000000$(printf %02d "$i")" \
         "FUSEFLOW_WORKER_POOL=media" \
         "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
-        "FUSEFLOW_SAMPLE_ENABLE_DOWNLOAD=false" \
-        "FUSEFLOW_SAMPLE_ENABLE_UPLOAD=false" \
-        "FUSEFLOW_SAMPLE_ENABLE_RESIZE=true" \
-        "FUSEFLOW_SAMPLE_ENABLE_WATERMARK=true" \
-        "FUSEFLOW_SAMPLE_ENABLE_COMPRESS=true"
+        "FUSEFLOW_SAMPLE_ENABLE_IMAGE=false" \
+        "FUSEFLOW_SAMPLE_ENABLE_ORDER=true"
     PORT=$((PORT + 1))
 done
 
@@ -108,4 +104,4 @@ for w in sorted(workers, key=lambda w: (w.get('poolName',''), w.get('id',''))):
     print('  pool=%-8s status=%-7s activities=%s' % (w.get('poolName'), w.get('status'), w.get('activities')))
 " 2>/dev/null || echo "  (registry not reachable — is the stack up?)"
 echo
-echo "Fleet live. Run: scripts/demo-scale.sh --fleet 10 20 32"
+echo "Fleet live. Run: scripts/demo-scale.sh --fleet 10 20 32  (add --failover to kill an engine mid-run)"

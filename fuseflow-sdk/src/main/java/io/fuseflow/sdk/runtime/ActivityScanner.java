@@ -40,7 +40,10 @@ public class ActivityScanner implements SmartInitializingSingleton {
             for (Method method : targetClass.getMethods()) {
                 Activity annotation = method.getAnnotation(Activity.class);
                 if (annotation != null) {
-                    registerMethod(bean, method, annotation.value());
+                    // Phase 6: blank value = activity name is the method name (Temporal-style).
+                    String name = annotation.value() == null || annotation.value().isBlank()
+                            ? method.getName() : annotation.value();
+                    registerMethod(bean, method, name);
                 }
             }
         }

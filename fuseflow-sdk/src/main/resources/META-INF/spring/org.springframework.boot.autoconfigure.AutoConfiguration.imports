@@ -1,1 +1,2 @@
 io.fuseflow.sdk.config.FuseFlowSdkAutoConfiguration
+io.fuseflow.sdk.config.FuseFlowWorkflowAutoConfiguration

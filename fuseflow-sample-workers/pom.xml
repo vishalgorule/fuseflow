@@ -12,7 +12,7 @@
 
     <artifactId>fuseflow-sample-workers</artifactId>
     <name>FuseFlow Sample Workers</name>
-    <description>Sample SDK workers — simulated image-processing DAG (Phase 4)</description>
+    <description>Sample SDK workers — simulated image-processing DAG + annotation-defined workflow (Phase 4/6)</description>
 
     <dependencies>
         <dependency>

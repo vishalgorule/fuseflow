@@ -19,6 +19,13 @@
             <groupId>io.fuseflow</groupId>
             <artifactId>fuseflow-common</artifactId>
         </dependency>
+        <!-- Test-only: the Phase 6 integration test drives the real SDK scanner + DefinitionClient
+             against this service's REST API. -->
+        <dependency>
+            <groupId>io.fuseflow</groupId>
+            <artifactId>fuseflow-sdk</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

@@ -1,7 +1,7 @@
 package io.fuseflow.definition.controller;
 
-import io.fuseflow.definition.dto.WorkflowRequest;
-import io.fuseflow.definition.dto.WorkflowResponse;
+import io.fuseflow.common.dto.WorkflowRequest;
+import io.fuseflow.common.dto.WorkflowResponse;
 import io.fuseflow.definition.service.WorkflowDefinitionService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -34,7 +35,12 @@ public class WorkflowController {
     }
 
     @GetMapping
-    public List<WorkflowResponse> list() {
+    public List<WorkflowResponse> list(@RequestParam(required = false) String name) {
+        // Phase 6: ?name=X lookup for SDK-side idempotent registration (0 or 1 results —
+        // names are unique). Plain GET without params stays the full list.
+        if (name != null && !name.isBlank()) {
+            return workflowService.findByName(name).stream().toList();
+        }
         return workflowService.list();
     }
 

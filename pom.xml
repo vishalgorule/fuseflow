@@ -63,6 +63,15 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <!-- JDK 25 disables implicit annotation processing. Opt in so the SDK's
+                             @Workflow compile-time validator runs wherever the SDK is used. -->
+                        <proc>full</proc>
+                    </configuration>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>

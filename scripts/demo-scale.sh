@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FuseFlow scale demo (Phase 5 — pool-based routing).
+# FuseFlow scale demo (Phase 5 — pool-based routing + engine HA).
 #
 #   Single mode:  demo-scale.sh <workflow-id> [count] [concurrency]
 #       Runs `count` executions of one workflow definition (default 1 / 16).
@@ -11,13 +11,33 @@
 #       each (round-robin), and prints a per-workflow + fleet summary with honest throughput
 #       based on the real task counts.
 #
-# Requires the live stack (make up && make services) + workers (make workers or
-# scripts/start-fleet-workers.sh).
+#   Engine HA:    every run preflights the HA stack — both engine instances (8082 + 8084),
+#       the activity-results partition count (>= 4 for balanced consumption), and engine
+#       state before/after the run. Pass --failover[=PORT] to additionally kill one engine
+#       instance after the batch is started, let the survivor finish the run, then restart
+#       the killed instance so the stack is left in full HA (default target: 8084).
+#
+# Requires the live stack (make up && make services — engine HA by default) + workers
+# (make workers or scripts/start-fleet-workers.sh).
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 DEF_URL=localhost:8081
 ENG_URL=localhost:8082
+ENG_HA_URL=localhost:8084
 REG_URL=localhost:8083
+
+# --failover[=PORT] is optional and position-independent; strip it before positional parsing.
+FAILOVER=""
+ARGS=()
+for a in "$@"; do
+    case "$a" in
+        --failover) FAILOVER=8084 ;;
+        --failover=*) FAILOVER=${a#--failover=} ;;
+        *) ARGS+=("$a") ;;
+    esac
+done
+set -- "${ARGS[@]}"
 
 if [ "${1:-}" = "--fleet" ]; then
     MODE=fleet
@@ -30,8 +50,8 @@ else
     COUNT=${2:-1}
     CONCURRENCY=${3:-16}
     if [ -z "$WF_ID" ]; then
-        echo "usage: demo-scale.sh <workflow-id> [count] [concurrency]" >&2
-        echo "       demo-scale.sh --fleet <fleet-size> [per-workflow] [concurrency]" >&2
+        echo "usage: demo-scale.sh <workflow-id> [count] [concurrency] [--failover[=PORT]]" >&2
+        echo "       demo-scale.sh --fleet <fleet-size> [per-workflow] [concurrency] [--failover[=PORT]]" >&2
         exit 1
     fi
 fi
@@ -117,14 +137,60 @@ for activity in $ALL_ACTIVITIES; do
     fi
 done
 
+# ------------------------------------------------------------------- engine HA preflight
+
+eng_status() {  # UP | DOWN for a port
+    curl -s --max-time 2 "localhost:$1/actuator/health" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo DOWN
+}
+eng_get() {  # GET <path> from the first live engine (8082 primary, 8084 HA fallback)
+    local path=$1
+    for p in 8082 8084; do
+        local body
+        body=$(curl -s --max-time 3 "localhost:$p$path" 2>/dev/null || true)
+        [ -n "$body" ] && { printf '%s' "$body"; return 0; }
+    done
+    return 1
+}
+
+ENG_A=$(eng_status 8082)
+ENG_B=$(eng_status 8084)
+echo
+echo "=== engine HA preflight ==="
+echo "  engine A (8082): $ENG_A   engine B (8084): $ENG_B"
+partitions=$(docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --describe --topic activity-results 2>/dev/null \
+    | grep -o 'PartitionCount: [0-9]*' | grep -o '[0-9]*' | head -1 || true)
+echo "  activity-results partitions: ${partitions:-?} (>= 4 needed for balanced HA consumption)"
+if [ "$ENG_A" != "UP" ] || [ "$ENG_B" != "UP" ]; then
+    echo "  WARN: engine HA is degraded (only one instance up) — the run will not exercise failover"
+    FAILOVER=""
+fi
+if [ -n "$FAILOVER" ] && [ "$FAILOVER" != "8082" ] && [ "$FAILOVER" != "8084" ]; then
+    echo "  WARN: unknown --failover target '$FAILOVER' (use 8082 or 8084) — defaulting to 8084"
+    FAILOVER=8084
+fi
+if [ -n "$FAILOVER" ]; then
+    echo "  --failover armed: engine on port $FAILOVER will be killed after the batch starts"
+fi
+
 # --------------------------------------------------------------- snapshot worker log baselines
 
 log_marker() {
+    # Track both the single `make workers` worker (/tmp/fuseflow-workers.log) and the fleet
+    # workers (/tmp/fuseflow-workers-*.log) so the per-worker delta covers whichever is live.
+    local logs=()
+    if [ -f /tmp/fuseflow-workers.log ]; then
+        logs+=(/tmp/fuseflow-workers.log)
+    fi
     if ls /tmp/fuseflow-workers-*.log >/dev/null 2>&1; then
-        for f in /tmp/fuseflow-workers-*.log; do
+        logs+=(/tmp/fuseflow-workers-*.log)
+    fi
+    if [ "${#logs[@]}" -gt 0 ]; then
+        for f in "${logs[@]}"; do
             grep -c 'Executing ' "$f" 2>/dev/null || echo 0
         done > "$WORK_DIR/baseline.txt"
-        ls /tmp/fuseflow-workers-*.log > "$WORK_DIR/logs.txt"
+        printf '%s\n' "${logs[@]}" > "$WORK_DIR/logs.txt"
     fi
 }
 log_marker
@@ -153,6 +219,22 @@ else
 fi
 echo "started $STARTED execution(s)"
 
+# ------------------------------------------------------------- engine HA failover (--failover)
+
+if [ -n "$FAILOVER" ]; then
+    pid=$(lsof -ti tcp:"$FAILOVER" 2>/dev/null || true)
+    if [ -n "$pid" ]; then
+        echo "=== --failover: killing engine on port $FAILOVER (pid $pid) mid-run ==="
+        kill "$pid"
+        # Give the consumer group a moment to rebalance before polling starts.
+        sleep 5
+        echo "  killed; the survivor finishes the batch (polls fall back to any live engine)"
+    else
+        echo "WARN: no process on port $FAILOVER — continuing without failover"
+        FAILOVER=""
+    fi
+fi
+
 # collect ids (single mode: bare id; fleet mode: "<wf-index> <id>" so per-workflow results work)
 : > "$IDS_FILE"
 if [ "$MODE" = "fleet" ]; then
@@ -163,9 +245,10 @@ if [ "$MODE" = "fleet" ]; then
         done
     done
 else
+    # Poll loop reads "<idx> <id>" pairs; single mode has no per-workflow index, so use 0.
     for f in "$RESP_DIR"/*.json; do
         id=$(python3 -c "import sys, json; print(json.load(open('$f')).get('id',''))" 2>/dev/null || true)
-        [ -n "$id" ] && echo "$id" >> "$IDS_FILE"
+        [ -n "$id" ] && echo "0 $id" >> "$IDS_FILE"
     done
 fi
 STARTED=$(wc -l < "$IDS_FILE" | tr -d ' ')
@@ -195,7 +278,7 @@ while :; do
         for i in $(seq 0 $((FLEET_SIZE - 1))); do WF_COMPLETED[$i]=0; WF_FAILED[$i]=0; done
     fi
     while read -r idx id; do
-        status=$(curl -s "$ENG_URL/api/v1/executions/$id" | python3 -c "import sys, json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "?")
+        status=$(eng_get "/api/v1/executions/$id" | python3 -c "import sys, json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "?")
         case "$status" in
             COMPLETED)
                 COMPLETED=$((COMPLETED + 1))
@@ -255,6 +338,37 @@ if [ -f "$WORK_DIR/logs.txt" ]; then
         i=$((i + 1))
     done < "$WORK_DIR/logs.txt"
 fi
+
+# ------------------------------------------------------------------ engine HA post-run
+
+if [ -n "$FAILOVER" ]; then
+    # Restore the stack to full HA: relaunch the killed instance with the same env the start
+    # scripts use (shard split, listener concurrency, partitions, per-instance worker-events group).
+    JAR=$(ls fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar 2>/dev/null | head -1 || true)
+    if [ -n "$JAR" ]; then
+        if [ "$FAILOVER" = "8082" ]; then
+            ./scripts/daemon-java.sh "$JAR" /tmp/fuseflow-engine.log \
+                FUSEFLOW_ENGINE_OWNED_SHARDS=0-3 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 \
+                FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-a
+        else
+            ./scripts/daemon-java.sh "$JAR" /tmp/fuseflow-engine-2.log \
+                SERVER_PORT=8084 FUSEFLOW_ENGINE_OWNED_SHARDS=4-7 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 \
+                FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-b
+        fi
+        for i in $(seq 1 30); do
+            [ "$(eng_status "$FAILOVER")" = "UP" ] && break
+            sleep 2
+        done
+        if [ "$(eng_status "$FAILOVER")" = "UP" ]; then
+            echo "  failover: killed port $FAILOVER mid-run, survivor completed the batch, engine restarted (full HA restored)"
+        else
+            echo "  WARN: failover engine on port $FAILOVER did not come back UP after restart" >&2
+        fi
+    else
+        echo "  WARN: engine jar missing — cannot restart the killed instance (run 'make build')" >&2
+    fi
+fi
+echo "  engines after run: A=$(eng_status 8082) B=$(eng_status 8084)"
 
 rm -rf "$WORK_DIR"
 

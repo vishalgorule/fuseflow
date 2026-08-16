@@ -1,15 +1,15 @@
 package io.fuseflow.definition.service;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.WorkflowRequest;
+import io.fuseflow.common.dto.WorkflowResponse;
 import io.fuseflow.common.exception.ApiException;
-import io.fuseflow.definition.dto.WorkflowRequest;
-import io.fuseflow.definition.dto.WorkflowResponse;
+import io.fuseflow.common.validation.DagValidator;
 import io.fuseflow.definition.model.TaskDependency;
 import io.fuseflow.definition.model.WorkflowDefinition;
 import io.fuseflow.definition.model.WorkflowTask;
 import io.fuseflow.definition.repository.WorkflowDefinitionRepository;
 import io.fuseflow.definition.repository.WorkflowTaskRepository;
-import io.fuseflow.definition.validation.DagValidator;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -108,6 +109,18 @@ public class WorkflowDefinitionService {
         WorkflowDefinition definition = definitionRepository.findById(id)
                 .orElseThrow(() -> ApiException.notFound("workflow_not_found", "Workflow '" + id + "' does not exist"));
         return toResponse(definition, taskRepository.findTasks(id), taskRepository.findDependencies(id));
+    }
+
+    /**
+     * Lookup by unique name (Phase 6): enables the SDK's idempotent registration (same DAG →
+     * no-op, different DAG → replace). Phase 8 extends this with {@code version} for
+     * multi-versioned lookups.
+     */
+    public Optional<WorkflowResponse> findByName(String name) {
+        return definitionRepository.findByName(name)
+                .map(definition -> toResponse(definition,
+                        taskRepository.findTasks(definition.id()),
+                        taskRepository.findDependencies(definition.id())));
     }
 
     // ------------------------------------------------------------------ helpers
