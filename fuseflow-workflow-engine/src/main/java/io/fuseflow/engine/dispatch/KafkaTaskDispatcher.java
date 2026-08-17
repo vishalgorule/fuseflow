@@ -26,9 +26,12 @@ import java.util.Optional;
  *
  * <p>Delivery is at-least-once and idempotent by design: the activity is durably {@code
  * SCHEDULED} before dispatch, and the worker echoes {@code (executionId, taskId, attempt)} in
- * its result, so a re-published task after a crash or engine restart is harmless. The task id
- * key keeps per-task ordering within a partition; the correlation-ID header keeps end-to-end
- * traceability.
+ * its result, so a re-published task after a crash or engine restart is harmless. The record
+ * key is {@code executionId:taskId}: it keeps retries of the same task in the same partition
+ * (per-task ordering) while spreading each execution's tasks across the pool topic's
+ * partitions — keying by task id alone would hash the few distinct task ids onto a subset of
+ * the partitions (e.g. 5 task ids over 8 partitions leaves 3 idle). The correlation-ID header
+ * keeps end-to-end traceability.
  *
  * <p>Unroutable tasks (no ONLINE pool advertises the activity — interim surface before Phase 7
  * retries/timeouts) stay {@code SCHEDULED} and append an {@code ActivityUnroutable} diagnostic
@@ -73,7 +76,8 @@ public class KafkaTaskDispatcher implements TaskDispatcher {
 
     private void publish(ActivityTask task, String topic) {
         try {
-            ProducerRecord<String, String> record = new ProducerRecord<>(topic, task.taskId(),
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic,
+                    task.executionId() + ":" + task.taskId(),
                     objectMapper.writeValueAsString(task));
             record.headers().add(CorrelationId.HEADER,
                     CorrelationId.getOrCreate().getBytes(StandardCharsets.UTF_8));

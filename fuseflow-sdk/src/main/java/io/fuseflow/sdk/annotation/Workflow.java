@@ -56,4 +56,12 @@ public @interface Workflow {
 
     /** Optional human-readable description. */
     String description() default "";
+
+    /**
+     * Optional workflow-level retry policy (Phase 7, FR-6) — the default for every task.
+     * A per-task {@link Retry} on {@link Step}/{@link Activity} overrides it; unset knobs
+     * fall through to the engine's configured defaults. An all-default {@code @Retry} is
+     * treated as "no policy".
+     */
+    Retry retry() default @Retry;
 }

@@ -51,8 +51,8 @@ public class InMemoryTaskDispatcher implements TaskDispatcher {
     public void dispatch(ActivityTask task) {
         executor.execute(() -> {
             try {
-                if (!activityState.startActivity(task.executionId(), task.taskId())) {
-                    // Stale dispatch (already terminal) — nothing to do.
+                if (!activityState.startActivity(task.executionId(), task.taskId(), task.attempt())) {
+                    // Stale dispatch (already terminal or from a previous attempt) — nothing to do.
                     return;
                 }
                 ActivityResult result = activityExecutor.execute(task);

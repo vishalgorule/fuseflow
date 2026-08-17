@@ -70,4 +70,10 @@ public @interface Activity {
      * Only meaningful on methods of a {@code @Workflow} class.
      */
     String[] dependsOn() default {};
+
+    /**
+     * Optional per-task retry policy (Phase 7, FR-6) — overrides the {@link Workflow}-level
+     * {@link Retry}; unset knobs fall through to it and then to the engine defaults.
+     */
+    Retry retry() default @Retry;
 }

@@ -7,6 +7,7 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.Ordered;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -38,6 +39,17 @@ public class PoolRoutingService implements ApplicationRunner, Ordered {
 
     @Override
     public void run(ApplicationArguments args) {
+        refresh();
+    }
+
+    /**
+     * Self-healing cadence (Phase 5 HA): re-seeds the routing table from the registry even
+     * with no worker-events, so a missed/lost event (or a heartbeat revival that raced the
+     * published {@code worker_online}) can never leave dispatch pointing at a stale snapshot.
+     * Read-only when nothing changed; safe to run concurrently with event-driven refreshes.
+     */
+    @Scheduled(fixedDelayString = "${fuseflow.engine.routing.refresh-interval:30s}")
+    public void refreshPeriodically() {
         refresh();
     }
 

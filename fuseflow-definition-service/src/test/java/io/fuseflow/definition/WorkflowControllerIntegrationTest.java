@@ -289,6 +289,45 @@ class WorkflowControllerIntegrationTest {
 
     @Test
     @Order(14)
+    void persistsWorkflowAndTaskRetryPolicies() throws Exception {
+        // Phase 7: retry policies round-trip at workflow and task level and survive restart.
+        String body = """
+                {
+                  "name": "retry-policy",
+                  "description": "retries",
+                  "retryPolicy": {"maxAttempts": 4, "fixedDelaySeconds": 3, "exponentialBackoff": true, "backoffMultiplier": 2.0},
+                  "tasks": [
+                    {"id": "a", "activity": "actA", "retryPolicy": {"maxAttempts": 1}},
+                    {"id": "b", "activity": "actB"}
+                  ]
+                }
+                """;
+        String id = postAndExtractId(body);
+        mockMvc.perform(get("/api/v1/workflows/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.retryPolicy.maxAttempts").value(4))
+                .andExpect(jsonPath("$.retryPolicy.fixedDelaySeconds").value(3))
+                .andExpect(jsonPath("$.retryPolicy.exponentialBackoff").value(true))
+                .andExpect(jsonPath("$.tasks[0].retryPolicy.maxAttempts").value(1))
+                .andExpect(jsonPath("$.tasks[1].retryPolicy").doesNotExist());
+    }
+
+    @Test
+    @Order(15)
+    void rejectsInvalidRetryPolicy() throws Exception {
+        mockMvc.perform(post("/api/v1/workflows")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name": "bad-policy", "retryPolicy": {"maxAttempts": 0},
+                                 "tasks": [{"id": "a", "activity": "actA"}]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_workflow"))
+                .andExpect(jsonPath("$.errors[0].field").value("retryPolicy.maxAttempts"));
+    }
+
+    @Test
+    @Order(16)
     void looksUpByName() throws Exception {
         // Phase 6: ?name=X lookup backs the SDK's idempotent upsert. The image-processing
         // workflow registered by test 1 is still present (names are unique → 1 result).

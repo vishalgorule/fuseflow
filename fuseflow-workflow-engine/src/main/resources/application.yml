@@ -31,6 +31,14 @@ spring:
       # activity-results must have ≥ that many partitions (FUSEFLOW_KAFKA_TOPICS_PARTITIONS).
       concurrency: ${FUSEFLOW_ENGINE_LISTENER_CONCURRENCY:1}
 
+  task:
+    scheduling:
+      pool:
+        # Phase 7 scale: dedicated scheduler threads so the retry poller, the timeout poller
+        # and the routing self-heal poller never block each other (Spring's default is a single
+        # thread shared by all @Scheduled).
+        size: ${FUSEFLOW_ENGINE_SCHEDULER_POOL:3}
+
   jackson:
     default-property-inclusion: non_null
 
@@ -46,6 +54,29 @@ fuseflow:
     shards: ${FUSEFLOW_ENGINE_SHARDS:8}
     owned-shards: ${FUSEFLOW_ENGINE_OWNED_SHARDS:all}
     worker-events-group: ${FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP:fuseflow-engine-events}
+    # Phase 7 reliability defaults (FR-6/FR-7) — the engine-side fallback when neither the
+    # task nor the workflow definition specifies a knob (resolution: task -> workflow -> here).
+    retry:
+      default-max-attempts: ${FUSEFLOW_ENGINE_RETRY_MAX_ATTEMPTS:3}
+      default-fixed-delay: ${FUSEFLOW_ENGINE_RETRY_FIXED_DELAY:5s}
+      default-exponential-backoff: ${FUSEFLOW_ENGINE_RETRY_EXPONENTIAL_BACKOFF:true}
+      default-backoff-multiplier: ${FUSEFLOW_ENGINE_RETRY_BACKOFF_MULTIPLIER:2.0}
+      # Exception class names that must never be retried (exact match or trailing '*').
+      default-non-retryable-exceptions: []
+    timeout:
+      # SCHEDULED -> STARTED window (unroutable tasks / dispatches nobody picked up).
+      start: ${FUSEFLOW_ENGINE_TIMEOUT_START:60s}
+      # STARTED -> result window (hung/dead workers; the registry's heartbeat detection
+      # already routes their pool OFFLINE, so the retry lands on a live worker).
+      execution: ${FUSEFLOW_ENGINE_TIMEOUT_EXECUTION:300s}
+    # Cadence of the retry + timeout poller (DB-polled due-time queue).
+    poll-interval: ${FUSEFLOW_ENGINE_POLL_INTERVAL:5s}
+    # Max due retries claimed per poll cycle — a burst drains across cycles, oldest first.
+    poll-batch-size: ${FUSEFLOW_ENGINE_POLL_BATCH_SIZE:500}
+    # Self-healing routing: re-seed the pool routing table from the registry on this cadence
+    # even without worker-events, so a missed event can never leave routing stale.
+    routing:
+      refresh-interval: ${FUSEFLOW_ENGINE_ROUTING_REFRESH_INTERVAL:30s}
     # Partition ceiling per pool topic (min(declared concurrency, cap)).
     pool-topic:
       partition-cap: ${FUSEFLOW_ENGINE_POOL_PARTITION_CAP:16}

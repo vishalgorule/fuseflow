@@ -1,6 +1,7 @@
 package io.fuseflow.common.validation;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 import org.junit.jupiter.api.Test;
 
@@ -153,6 +154,36 @@ class DagValidatorTest {
         assertThat(errors).anySatisfy(error -> {
             assertThat(error.field()).isEqualTo("tasks[1]");
             assertThat(error.message()).contains("task must not be null");
+        });
+    }
+
+    @Test
+    void rejectsInvalidWorkflowRetryPolicy() {
+        WorkflowRequest request = new WorkflowRequest("w", null,
+                new RetryPolicy(0, -1, null, 1.0, List.of(" ")),
+                List.of(task("a", "actA")));
+        List<ApiError.FieldError> errors = validator.validate(request);
+        assertThat(errors).extracting(ApiError.FieldError::field).containsExactlyInAnyOrder(
+                "retryPolicy.maxAttempts", "retryPolicy.fixedDelaySeconds",
+                "retryPolicy.backoffMultiplier", "retryPolicy.nonRetryableExceptions[0]");
+    }
+
+    @Test
+    void acceptsValidRetryPolicies() {
+        WorkflowRequest request = new WorkflowRequest("w", null,
+                new RetryPolicy(3, 5, true, 2.0, List.of("java.lang.IllegalArgumentException")),
+                List.of(new WorkflowRequest.Task("a", "actA", null,
+                        new RetryPolicy(1, null, null, null, null))));
+        assertThat(validator.validate(request)).isEmpty();
+    }
+
+    @Test
+    void rejectsInvalidPerTaskRetryPolicy() {
+        WorkflowRequest.Task task = new WorkflowRequest.Task("a", "actA", null, new RetryPolicy(0, null, null, null, null));
+        List<ApiError.FieldError> errors = validator.validate(request(task));
+        assertThat(errors).anySatisfy(error -> {
+            assertThat(error.field()).isEqualTo("tasks[0].retryPolicy.maxAttempts");
+            assertThat(error.message()).contains("maxAttempts must be at least 1");
         });
     }
 

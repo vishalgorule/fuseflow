@@ -26,12 +26,13 @@ public class WorkflowDefinitionRepository {
 
     public void insert(WorkflowDefinition definition) {
         jdbc.sql("""
-                        INSERT INTO %s (id, name, description, version, created_at, updated_at)
-                        VALUES (:id, :name, :description, :version, :createdAt, :updatedAt)
+                        INSERT INTO %s (id, name, description, retry_policy, version, created_at, updated_at)
+                        VALUES (:id, :name, :description, CAST(:retryPolicy AS jsonb), :version, :createdAt, :updatedAt)
                         """.formatted(TABLE))
                 .param("id", definition.id())
                 .param("name", definition.name())
                 .param("description", definition.description())
+                .param("retryPolicy", definition.retryPolicyJson())
                 .param("version", definition.version())
                 .param("createdAt", Timestamp.from(definition.createdAt()))
                 .param("updatedAt", Timestamp.from(definition.updatedAt()))
@@ -40,7 +41,7 @@ public class WorkflowDefinitionRepository {
 
     public Optional<WorkflowDefinition> findById(UUID id) {
         return jdbc.sql("""
-                        SELECT id, name, description, version, created_at, updated_at
+                        SELECT id, name, description, retry_policy, version, created_at, updated_at
                         FROM %s WHERE id = :id
                         """.formatted(TABLE))
                 .param("id", id)
@@ -50,7 +51,7 @@ public class WorkflowDefinitionRepository {
 
     public Optional<WorkflowDefinition> findByName(String name) {
         return jdbc.sql("""
-                        SELECT id, name, description, version, created_at, updated_at
+                        SELECT id, name, description, retry_policy, version, created_at, updated_at
                         FROM %s WHERE name = :name
                         """.formatted(TABLE))
                 .param("name", name)
@@ -60,7 +61,7 @@ public class WorkflowDefinitionRepository {
 
     public List<WorkflowDefinition> findAll() {
         return jdbc.sql("""
-                        SELECT id, name, description, version, created_at, updated_at
+                        SELECT id, name, description, retry_policy, version, created_at, updated_at
                         FROM %s ORDER BY created_at DESC, id
                         """.formatted(TABLE))
                 .query(this::mapRow)
@@ -71,16 +72,17 @@ public class WorkflowDefinitionRepository {
      * Optimistic update of the mutable columns; returns {@code false} when the
      * row's version no longer matches {@code expectedVersion} (concurrent write).
      */
-    public boolean update(UUID id, String name, String description, long expectedVersion) {
+    public boolean update(UUID id, String name, String description, String retryPolicyJson, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
-                        SET name = :name, description = :description,
+                        SET name = :name, description = :description, retry_policy = CAST(:retryPolicy AS jsonb),
                             version = version + 1, updated_at = :updatedAt
                         WHERE id = :id AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("id", id)
                 .param("name", name)
                 .param("description", description)
+                .param("retryPolicy", retryPolicyJson)
                 .param("updatedAt", Timestamp.from(Instant.now()))
                 .param("expectedVersion", expectedVersion)
                 .update() == 1;
@@ -107,6 +109,7 @@ public class WorkflowDefinitionRepository {
                 rs.getObject("id", UUID.class),
                 rs.getString("name"),
                 rs.getString("description"),
+                rs.getString("retry_policy"),
                 rs.getLong("version"),
                 rs.getTimestamp("created_at").toInstant(),
                 rs.getTimestamp("updated_at").toInstant());

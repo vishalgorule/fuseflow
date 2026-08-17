@@ -110,6 +110,39 @@ class DefinitionClientTest {
     }
 
     @Test
+    void changedRetryPolicyReplacesExistingDefinitionOnNameConflict() throws Exception {
+        // Phase 7: the DAG is identical but the existing definition carries no retry policy
+        // while the request does → the client must PUT (a policy change is a real change).
+        WorkflowRequest withPolicy = new WorkflowRequest("image-processing", "desc",
+                new io.fuseflow.common.dto.RetryPolicy(3, 5, true, 2.0, null),
+                List.of(
+                        new WorkflowRequest.Task("download", "downloadImage", null),
+                        new WorkflowRequest.Task("resize", "resizeImage", List.of("download")),
+                        new WorkflowRequest.Task("upload", "uploadImage", List.of("resize"))));
+        HttpServer server = startServer(exchange -> {
+            requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
+            if ("POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 409, "{}");
+            } else if ("GET".equals(exchange.getRequestMethod())) {
+                respond(exchange, 200, "[" + EXISTING_RESPONSE + "]");
+            } else if ("PUT".equals(exchange.getRequestMethod())) {
+                respond(exchange, 200, UPDATED_RESPONSE);
+            }
+        });
+        try {
+            DefinitionClient client = clientFor(server);
+            var response = client.register(withPolicy);
+            assertThat(response.version()).isEqualTo(3);
+            assertThat(requests).contains(
+                    "POST /api/v1/workflows",
+                    "GET /api/v1/workflows",
+                    "PUT /api/v1/workflows/11111111-1111-1111-1111-111111111111");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void retriesCreateWhenConflictHasNoExistingDefinition() throws Exception {
         AtomicReference<Integer> postCount = new AtomicReference<>(0);
         HttpServer server = startServer(exchange -> {

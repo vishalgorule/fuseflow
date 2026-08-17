@@ -36,11 +36,12 @@ public class WorkflowTaskRepository {
                 .update();
 
         for (WorkflowTask task : tasks) {
-            jdbc.sql("INSERT INTO " + TASK_TABLE + " (workflow_id, task_id, activity_name) "
-                            + "VALUES (:workflowId, :taskId, :activity)")
+            jdbc.sql("INSERT INTO " + TASK_TABLE + " (workflow_id, task_id, activity_name, retry_policy) "
+                            + "VALUES (:workflowId, :taskId, :activity, CAST(:retryPolicy AS jsonb))")
                     .param("workflowId", task.workflowId())
                     .param("taskId", task.taskId())
                     .param("activity", task.activityName())
+                    .param("retryPolicy", task.retryPolicyJson())
                     .update();
         }
         for (TaskDependency dependency : dependencies) {
@@ -54,7 +55,8 @@ public class WorkflowTaskRepository {
     }
 
     public List<WorkflowTask> findTasks(UUID workflowId) {
-        return jdbc.sql("SELECT workflow_id, task_id, activity_name FROM " + TASK_TABLE + " WHERE workflow_id = :workflowId")
+        return jdbc.sql("SELECT workflow_id, task_id, activity_name, retry_policy FROM " + TASK_TABLE
+                        + " WHERE workflow_id = :workflowId")
                 .param("workflowId", workflowId)
                 .query(this::mapTask)
                 .list();
@@ -73,7 +75,7 @@ public class WorkflowTaskRepository {
         if (workflowIds.isEmpty()) {
             return List.of();
         }
-        return jdbc.sql("SELECT workflow_id, task_id, activity_name FROM " + TASK_TABLE
+        return jdbc.sql("SELECT workflow_id, task_id, activity_name, retry_policy FROM " + TASK_TABLE
                         + " WHERE workflow_id IN (:workflowIds)")
                 .param("workflowIds", workflowIds)
                 .query(this::mapTask)
@@ -96,7 +98,8 @@ public class WorkflowTaskRepository {
         return new WorkflowTask(
                 rs.getObject("workflow_id", UUID.class),
                 rs.getString("task_id"),
-                rs.getString("activity_name"));
+                rs.getString("activity_name"),
+                rs.getString("retry_policy"));
     }
 
     private TaskDependency mapDependency(ResultSet rs, int rowNum) throws SQLException {

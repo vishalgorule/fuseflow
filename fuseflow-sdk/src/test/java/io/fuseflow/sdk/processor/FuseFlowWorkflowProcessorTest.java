@@ -141,6 +141,33 @@ class FuseFlowWorkflowProcessorTest {
                 .anyMatch(message -> message.contains("circular dependency detected"));
     }
 
+    private static final String RETRY_POLICY_SOURCE = """
+            import io.fuseflow.sdk.annotation.Activity;
+            import io.fuseflow.sdk.annotation.Retry;
+            import io.fuseflow.sdk.annotation.Step;
+            import io.fuseflow.sdk.annotation.Workflow;
+            import io.fuseflow.sdk.core.ActivityContext;
+
+            class Activities {
+                @Activity("actA") public String actA(ActivityContext ctx) { return null; }
+                @Activity("actB") public String actB(ActivityContext ctx) { return null; }
+            }
+
+            @Workflow(name = "w", retry = @Retry(maxAttempts = 3, fixedDelaySeconds = 5, exponentialBackoff = true))
+            @Step(id = "a", activity = "actA")
+            @Step(id = "b", activity = "actB", dependsOn = "a", retry = @Retry(maxAttempts = 1))
+            class Wf {}
+            """;
+
+    @Test
+    void compilesWorkflowWithRetryPolicies() throws Exception {
+        // Phase 7: @Retry on the workflow and on individual steps is valid annotation syntax
+        // and must not trip the processor.
+        Compilation result = compile(Map.of("Wf.java", RETRY_POLICY_SOURCE));
+        assertThat(result.success()).isTrue();
+        assertThat(result.errorMessages()).isEmpty();
+    }
+
     @Test
     void compilesSelfContainedWorkflow() throws Exception {
         Compilation result = compile(Map.of("Wf.java", SELF_CONTAINED_SOURCE));

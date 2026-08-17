@@ -25,10 +25,16 @@ public class WorkflowExecutionRepository {
         this.jdbc = jdbc;
     }
 
-    public void insert(WorkflowExecution execution) {
+    /**
+     * Inserts the execution with its completion counter (Phase 7 scale): the number of DAG
+     * tasks seeded as {@code activity_execution} rows — every completion decrements it and the
+     * execution completes when it reaches 0. The counter is exact because the decrement is
+     * transactional with the terminal transition that triggers it.
+     */
+    public void insert(WorkflowExecution execution, int remainingActivities) {
         jdbc.sql("""
-                        INSERT INTO %s (id, workflow_id, workflow_name, definition_version, input, status, shard, created_at, updated_at, started_at)
-                        VALUES (:id, :workflowId, :workflowName, :definitionVersion, CAST(:input AS jsonb), :status, :shard, :createdAt, :updatedAt, :startedAt)
+                        INSERT INTO %s (id, workflow_id, workflow_name, definition_version, input, status, shard, remaining_activities, created_at, updated_at, started_at)
+                        VALUES (:id, :workflowId, :workflowName, :definitionVersion, CAST(:input AS jsonb), :status, :shard, :remainingActivities, :createdAt, :updatedAt, :startedAt)
                         """.formatted(TABLE))
                 .param("id", execution.id())
                 .param("workflowId", execution.workflowId())
@@ -37,10 +43,32 @@ public class WorkflowExecutionRepository {
                 .param("input", execution.input())
                 .param("status", execution.status().name())
                 .param("shard", execution.shard())
+                .param("remainingActivities", remainingActivities)
                 .param("createdAt", Timestamp.from(execution.createdAt()))
                 .param("updatedAt", Timestamp.from(execution.updatedAt()))
                 .param("startedAt", Timestamp.from(execution.startedAt()))
                 .update();
+    }
+
+    /**
+     * Decrements the execution's completion counter, returning the new count (0 = the last
+     * activity just completed → the workflow can complete). Returns {@code -1} when the row is
+     * absent or the counter is already 0 — callers treat that as "not the last completion". The
+     * guarded UPDATE serializes concurrent sibling completions on the row lock, so exactly one
+     * completion observes 0.
+     */
+    public int decrementRemainingActivities(UUID executionId) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET remaining_activities = remaining_activities - 1, updated_at = :updatedAt
+                        WHERE id = :executionId AND remaining_activities > 0
+                        RETURNING remaining_activities
+                        """.formatted(TABLE))
+                .param("executionId", executionId)
+                .param("updatedAt", Timestamp.from(Instant.now()))
+                .query((rs, rowNum) -> rs.getInt(1))
+                .optional()
+                .orElse(-1);
     }
 
     private static final String SELECT_COLUMNS =
@@ -60,6 +88,22 @@ public class WorkflowExecutionRepository {
         return jdbc.sql("""
                         SELECT %s FROM %s ORDER BY created_at DESC, id
                         """.formatted(SELECT_COLUMNS, TABLE))
+                .query(this::mapRow)
+                .list();
+    }
+
+    /**
+     * Batch loads executions for many ids in a single query (avoids the N+1 per-row fetch in
+     * the retry poller — one input read per poll cycle instead of one per due retry).
+     */
+    public List<WorkflowExecution> findByIds(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("""
+                        SELECT %s FROM %s WHERE id IN (:ids)
+                        """.formatted(SELECT_COLUMNS, TABLE))
+                .param("ids", ids)
                 .query(this::mapRow)
                 .list();
     }

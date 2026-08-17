@@ -1,5 +1,6 @@
 package io.fuseflow.engine;
 
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.engine.dispatch.ActivityExecutor;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -97,9 +98,12 @@ class WorkflowEngineIntegrationTest {
                             new DefinitionSeeder.WorkflowDef.Task("a", "actA", List.of()),
                             new DefinitionSeeder.WorkflowDef.Task("b", "actB", List.of("a")),
                             new DefinitionSeeder.WorkflowDef.Task("c", "actC", List.of("b")))),
+                    // maxAttempts=1: preserves Phase 2 semantics — an activity failure fails the
+                    // workflow immediately (Phase 7 default would retry, see ReliabilityIntegrationTest).
                     new DefinitionSeeder.WorkflowDef(FAILING_WORKFLOW, "failing", List.of(
                             new DefinitionSeeder.WorkflowDef.Task("a", "actA", List.of()),
-                            new DefinitionSeeder.WorkflowDef.Task("b", "actB", List.of("a")))));
+                            new DefinitionSeeder.WorkflowDef.Task("b", "actB", List.of("a"))),
+                            new RetryPolicy(1, null, null, null, null)));
         }
     }
 

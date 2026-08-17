@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -46,15 +47,16 @@ public class Scheduler {
      * Marks the given activities SCHEDULED (guarded, so already-scheduled/terminal ones are
      * skipped) and dispatches them after commit. Called on start for root tasks and from the
      * result handler for dependents whose counter reached 0.
+     *
+     * <p>The execution input is passed in explicitly (Phase 7 scale): it is identical for every
+     * task of an execution, so callers that already hold it (start, recovery) avoid the
+     * per-schedule re-read, and the result path resolves it lazily at most once per completion.
      */
     @Transactional
-    public void schedule(UUID executionId, List<ActivityExecution> activities) {
+    public void schedule(UUID executionId, List<ActivityExecution> activities, String input) {
         if (activities == null || activities.isEmpty()) {
             return;
         }
-        String input = executionRepository.findById(executionId)
-                .map(WorkflowExecution::input)
-                .orElse(null);
         for (ActivityExecution activity : activities) {
             if (activityRepository.markScheduled(executionId, activity.taskId(), activity.version())) {
                 eventStore.append(executionId, "ActivityScheduled",
@@ -73,12 +75,19 @@ public class Scheduler {
      */
     @Transactional
     public void onActivityCompleted(UUID executionId, String completedTaskId, List<String> dependents) {
+        // Input is identical for every task of an execution: resolve it lazily, once per
+        // completion, only when a dependent actually becomes runnable (Phase 7 scale — the
+        // per-runnable-dependent re-read is gone; the decrement itself returns the updated row).
+        String input = null;
         for (String dependent : dependents) {
-            if (activityRepository.decrement(executionId, dependent)) {
-                ActivityExecution updated = activityRepository.findById(executionId, dependent).orElse(null);
-                if (updated != null && updated.remainingDependencies() == 0) {
-                    schedule(executionId, List.of(updated));
+            Optional<ActivityExecution> updated = activityRepository.decrement(executionId, dependent);
+            if (updated.isPresent() && updated.get().remainingDependencies() == 0) {
+                if (input == null) {
+                    input = executionRepository.findById(executionId)
+                            .map(WorkflowExecution::input)
+                            .orElse(null);
                 }
+                schedule(executionId, List.of(updated.get()), input);
             }
         }
     }

@@ -55,8 +55,8 @@ stop-workers: ## Stop the locally running sample workers
 	@pid=$$(lsof -ti tcp:8090 2>/dev/null); \
 	if [ -n "$$pid" ]; then kill $$pid && echo "stopped sample-workers ($$pid)"; fi
 
-workers-fleet: build ## Build + launch a heterogeneous pool fleet (3 io + 3 media workers, ports 8100-8105)
-	@scripts/start-fleet-workers.sh 3 3 8
+workers-fleet: build ## Build + launch the io pool fleet (8 io + 0 media workers, concurrency 8, ports 8100-8107)
+	@scripts/start-fleet-workers.sh 8 0 8
 
 stop-fleet-workers: ## Stop the fleet workers (ports 8100+)
 	@for port in $$(seq 8100 8120); do \

@@ -1,5 +1,6 @@
 package io.fuseflow.sdk.client;
 
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 import io.fuseflow.common.dto.WorkflowResponse;
 import org.slf4j.Logger;
@@ -92,12 +93,16 @@ public class DefinitionClient {
                 .body(WorkflowResponse.class);
     }
 
-    /** Structural DAG comparison (ids/activities/dependency edges; description is ignored). */
+    /**
+     * Structural comparison (ids/activities/dependency edges + retry policies; description is
+     * ignored). A changed retry policy must trigger a replacement, so policies are compared too.
+     */
     private boolean sameDag(WorkflowRequest request, WorkflowResponse existing) {
         if (request.tasks() == null || existing.tasks() == null) {
             return request.tasks() == null && existing.tasks() == null;
         }
-        if (request.tasks().size() != existing.tasks().size()) {
+        if (request.tasks().size() != existing.tasks().size()
+                || !samePolicy(request.retryPolicy(), existing.retryPolicy())) {
             return false;
         }
         Map<String, WorkflowRequest.Task> byId = request.tasks().stream()
@@ -105,11 +110,26 @@ public class DefinitionClient {
         for (WorkflowResponse.Task task : existing.tasks()) {
             WorkflowRequest.Task candidate = byId.get(task.id());
             if (candidate == null || !candidate.activity().equals(task.activity())
-                    || !sameSet(candidate.dependsOn(), task.dependsOn())) {
+                    || !sameSet(candidate.dependsOn(), task.dependsOn())
+                    || !samePolicy(candidate.retryPolicy(), task.retryPolicy())) {
                 return false;
             }
         }
         return true;
+    }
+
+    /** Policy equality: null and empty are equivalent; exception patterns compare as a set. */
+    private static boolean samePolicy(RetryPolicy a, RetryPolicy b) {
+        boolean aEmpty = a == null || a.isEmpty();
+        boolean bEmpty = b == null || b.isEmpty();
+        if (aEmpty || bEmpty) {
+            return aEmpty && bEmpty;
+        }
+        return java.util.Objects.equals(a.maxAttempts(), b.maxAttempts())
+                && java.util.Objects.equals(a.fixedDelaySeconds(), b.fixedDelaySeconds())
+                && java.util.Objects.equals(a.exponentialBackoff(), b.exponentialBackoff())
+                && java.util.Objects.equals(a.backoffMultiplier(), b.backoffMultiplier())
+                && sameSet(a.nonRetryableExceptions(), b.nonRetryableExceptions());
     }
 
     private static boolean sameSet(List<String> a, List<String> b) {

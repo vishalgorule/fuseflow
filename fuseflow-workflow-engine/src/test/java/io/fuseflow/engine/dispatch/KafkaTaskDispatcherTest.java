@@ -52,6 +52,9 @@ class KafkaTaskDispatcherTest {
         ArgumentCaptor<ProducerRecord<String, String>> captor = ArgumentCaptor.forClass(ProducerRecord.class);
         verify(kafkaTemplate).send(captor.capture());
         assertThat(captor.getValue().topic()).isEqualTo("fuseflow-pool.media");
+        // Key = executionId:taskId — spreads each execution's tasks across partitions while
+        // keeping retries of the same task in the same partition.
+        assertThat(captor.getValue().key()).isEqualTo(task.executionId() + ":b");
         // The payload is the task itself (wire contract unchanged).
         assertThat(captor.getValue().value()).contains("\"activityName\":\"resizeImage\"");
         verify(eventStore, never()).append(any(), any(), any());

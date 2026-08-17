@@ -25,8 +25,11 @@ if [ -z "$JAR" ]; then
     exit 1
 fi
 
-# Stop any previously launched fleet workers (ports 8100+).
-for port in $(seq 8100 $((8100 + IO + MEDIA))); do
+# Stop ALL previously launched fleet workers. The full 8100-8120 range, not just this run's
+# ports: a previous run with more workers (e.g. the old 3 io + 3 media default) leaves media
+# workers on ports this run never touches — they keep advertising + consuming the media pool
+# even when the config says 0 media.
+for port in $(seq 8100 8120); do
     pid=$(lsof -ti tcp:$port 2>/dev/null || true)
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null || true
@@ -53,26 +56,32 @@ launch() {
 
 PORT=8100
 echo "=== launching $IO io worker(s) (image-processing) + $MEDIA media worker(s) (order-fulfillment), concurrency=$THREADS ==="
-for i in $(seq 1 "$IO"); do
-    launch "$PORT" "io-$i" "/tmp/fuseflow-workers-io-$i.log" \
-        "SERVER_PORT=$PORT" \
-        "FUSEFLOW_WORKER_ID=33330000-0000-0000-0000-0000000000$(printf %02d "$i")" \
-        "FUSEFLOW_WORKER_POOL=io" \
-        "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
-        "FUSEFLOW_SAMPLE_ENABLE_IMAGE=true" \
-        "FUSEFLOW_SAMPLE_ENABLE_ORDER=false"
-    PORT=$((PORT + 1))
-done
-for i in $(seq 1 "$MEDIA"); do
-    launch "$PORT" "media-$i" "/tmp/fuseflow-workers-media-$i.log" \
-        "SERVER_PORT=$PORT" \
-        "FUSEFLOW_WORKER_ID=44440000-0000-0000-0000-0000000000$(printf %02d "$i")" \
-        "FUSEFLOW_WORKER_POOL=media" \
-        "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
-        "FUSEFLOW_SAMPLE_ENABLE_IMAGE=false" \
-        "FUSEFLOW_SAMPLE_ENABLE_ORDER=true"
-    PORT=$((PORT + 1))
-done
+# NOTE: guard every count loop with `[ n -gt 0 ]` — `seq 1 0` counts DOWN and emits "1 0",
+# so an unguarded media loop with MEDIA=0 would launch TWO media workers anyway.
+if [ "$IO" -gt 0 ]; then
+    for i in $(seq 1 "$IO"); do
+        launch "$PORT" "io-$i" "/tmp/fuseflow-workers-io-$i.log" \
+            "SERVER_PORT=$PORT" \
+            "FUSEFLOW_WORKER_ID=33330000-0000-0000-0000-0000000000$(printf %02d "$i")" \
+            "FUSEFLOW_WORKER_POOL=io" \
+            "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
+            "FUSEFLOW_SAMPLE_ENABLE_IMAGE=true" \
+            "FUSEFLOW_SAMPLE_ENABLE_ORDER=false"
+        PORT=$((PORT + 1))
+    done
+fi
+if [ "$MEDIA" -gt 0 ]; then
+    for i in $(seq 1 "$MEDIA"); do
+        launch "$PORT" "media-$i" "/tmp/fuseflow-workers-media-$i.log" \
+            "SERVER_PORT=$PORT" \
+            "FUSEFLOW_WORKER_ID=44440000-0000-0000-0000-0000000000$(printf %02d "$i")" \
+            "FUSEFLOW_WORKER_POOL=media" \
+            "FUSEFLOW_WORKER_CONCURRENCY=$THREADS" \
+            "FUSEFLOW_SAMPLE_ENABLE_IMAGE=false" \
+            "FUSEFLOW_SAMPLE_ENABLE_ORDER=true"
+        PORT=$((PORT + 1))
+    done
+fi
 
 echo
 echo "Waiting for workers to become healthy..."
@@ -93,6 +102,14 @@ echo "=== fleet worker health ==="
 for port in $(seq 8100 $((8099 + IO + MEDIA))); do
     state=$(curl -s --max-time 2 "localhost:$port/actuator/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo DOWN)
     echo "  port $port: $state"
+done
+
+# Sanity: no leftover worker from a previous run should be alive outside this run's range.
+for port in $(seq $((8100 + IO + MEDIA)) 8120); do
+    if lsof -ti tcp:$port >/dev/null 2>&1; then
+        echo "  WARN: stale worker still on port $port (previous run) — killing it"
+        kill "$(lsof -ti tcp:$port)" 2>/dev/null || true
+    fi
 done
 
 echo

@@ -38,7 +38,12 @@ public class PoolActivityListener {
     }
 
     @KafkaListener(topics = "${fuseflow.queue.pool-prefix:fuseflow-pool}.${fuseflow.worker.pool:default}",
-            groupId = "${fuseflow.worker.pool:default}")
+            groupId = "${fuseflow.worker.pool:default}",
+            // Phase 5: the pool's declared concurrency sizes the queue's partitions, so the
+            // consumer must match — one listener thread per declared concurrency, otherwise a
+            // single worker instance drains its own queue serially (5 tasks/s with the sample
+            // 200ms activity delay) and bursts past the engine's start timeout.
+            concurrency = "${fuseflow.worker.concurrency:1}")
     public void onDispatch(ConsumerRecord<String, String> record) {
         applyCorrelation(record);
         try {

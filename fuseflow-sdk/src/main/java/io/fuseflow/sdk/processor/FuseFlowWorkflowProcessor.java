@@ -1,9 +1,11 @@
 package io.fuseflow.sdk.processor;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 import io.fuseflow.common.validation.DagValidator;
 import io.fuseflow.sdk.annotation.Activity;
+import io.fuseflow.sdk.annotation.Retry;
 import io.fuseflow.sdk.annotation.Step;
 import io.fuseflow.sdk.annotation.Workflow;
 
@@ -98,7 +100,7 @@ public class FuseFlowWorkflowProcessor extends AbstractProcessor {
                 : tasksFromActivityMethods(workflowClass);
         WorkflowRequest request = new WorkflowRequest(name,
                 workflow.description() == null || workflow.description().isBlank() ? null : workflow.description(),
-                tasks);
+                toPolicy(workflow.retry()), tasks);
 
         // Structural rules — identical to the definition service (zero drift).
         for (ApiError.FieldError error : dagValidator.validate(request)) {
@@ -127,7 +129,7 @@ public class FuseFlowWorkflowProcessor extends AbstractProcessor {
         for (Step step : steps) {
             List<String> dependsOn = step.dependsOn() == null || step.dependsOn().length == 0
                     ? null : List.of(step.dependsOn());
-            tasks.add(new WorkflowRequest.Task(step.id(), step.activity(), dependsOn));
+            tasks.add(new WorkflowRequest.Task(step.id(), step.activity(), dependsOn, toPolicy(step.retry())));
         }
         return tasks;
     }
@@ -156,10 +158,24 @@ public class FuseFlowWorkflowProcessor extends AbstractProcessor {
                     ? activityName : annotation.id();
             List<String> dependsOn = annotation.dependsOn() == null || annotation.dependsOn().length == 0
                     ? null : List.of(annotation.dependsOn());
-            tasks.add(new WorkflowRequest.Task(taskId, activityName, dependsOn));
+            tasks.add(new WorkflowRequest.Task(taskId, activityName, dependsOn, toPolicy(annotation.retry())));
         }
         tasks.sort(Comparator.comparing(WorkflowRequest.Task::id));
         return tasks;
+    }
+
+    /** Maps a {@code @Retry} annotation to the shared wire record; null when nothing is set. */
+    private static RetryPolicy toPolicy(Retry retry) {
+        if (retry == null) {
+            return null;
+        }
+        RetryPolicy policy = new RetryPolicy(
+                retry.maxAttempts() > 0 ? retry.maxAttempts() : null,
+                retry.fixedDelaySeconds() > 0 ? retry.fixedDelaySeconds() : null,
+                retry.exponentialBackoff() ? Boolean.TRUE : null,
+                retry.backoffMultiplier() > 0 ? retry.backoffMultiplier() : null,
+                retry.nonRetryableExceptions().length > 0 ? List.of(retry.nonRetryableExceptions()) : null);
+        return policy.isEmpty() ? null : policy;
     }
 
     private void validateActivityMethod(ExecutableElement method) {

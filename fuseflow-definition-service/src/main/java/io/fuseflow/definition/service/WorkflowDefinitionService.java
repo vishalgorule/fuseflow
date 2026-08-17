@@ -1,6 +1,7 @@
 package io.fuseflow.definition.service;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 import io.fuseflow.common.dto.WorkflowResponse;
 import io.fuseflow.common.exception.ApiException;
@@ -13,6 +14,7 @@ import io.fuseflow.definition.repository.WorkflowTaskRepository;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,13 +39,16 @@ public class WorkflowDefinitionService {
     private final WorkflowDefinitionRepository definitionRepository;
     private final WorkflowTaskRepository taskRepository;
     private final DagValidator dagValidator;
+    private final ObjectMapper objectMapper;
 
     public WorkflowDefinitionService(WorkflowDefinitionRepository definitionRepository,
                                      WorkflowTaskRepository taskRepository,
-                                     DagValidator dagValidator) {
+                                     DagValidator dagValidator,
+                                     ObjectMapper objectMapper) {
         this.definitionRepository = definitionRepository;
         this.taskRepository = taskRepository;
         this.dagValidator = dagValidator;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -51,7 +56,8 @@ public class WorkflowDefinitionService {
         validate(request);
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
-        WorkflowDefinition definition = new WorkflowDefinition(id, request.name(), request.description(), 0, now, now);
+        WorkflowDefinition definition = new WorkflowDefinition(id, request.name(), request.description(),
+                toJson(request.retryPolicy()), 0, now, now);
         try {
             definitionRepository.insert(definition);
         } catch (DuplicateKeyException ex) {
@@ -73,7 +79,8 @@ public class WorkflowDefinitionService {
                     "A workflow named '" + request.name() + "' already exists");
         }
 
-        if (!definitionRepository.update(id, request.name(), request.description(), existing.version())) {
+        if (!definitionRepository.update(id, request.name(), request.description(),
+                toJson(request.retryPolicy()), existing.version())) {
             throw ApiException.conflict("workflow_version_conflict",
                     "Workflow '" + id + "' was modified concurrently; retry");
         }
@@ -134,7 +141,7 @@ public class WorkflowDefinitionService {
 
     private List<WorkflowTask> toTasks(UUID workflowId, List<WorkflowRequest.Task> tasks) {
         return tasks.stream()
-                .map(task -> new WorkflowTask(workflowId, task.id(), task.activity()))
+                .map(task -> new WorkflowTask(workflowId, task.id(), task.activity(), toJson(task.retryPolicy())))
                 .toList();
     }
 
@@ -161,10 +168,34 @@ public class WorkflowDefinitionService {
         List<WorkflowResponse.Task> responseTasks = tasks.stream()
                 .sorted(Comparator.comparing(WorkflowTask::taskId))
                 .map(task -> new WorkflowResponse.Task(task.taskId(), task.activityName(),
-                        depsByTask.getOrDefault(task.taskId(), List.of())))
+                        depsByTask.getOrDefault(task.taskId(), List.of()),
+                        parsePolicy(task.retryPolicyJson())))
                 .toList();
         return new WorkflowResponse(definition.id(), definition.name(), definition.description(),
+                parsePolicy(definition.retryPolicyJson()),
                 responseTasks, definition.version(), definition.createdAt(), definition.updatedAt());
+    }
+
+    private String toJson(RetryPolicy policy) {
+        if (policy == null || policy.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(policy);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to serialize retry policy", ex);
+        }
+    }
+
+    private RetryPolicy parsePolicy(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, RetryPolicy.class);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to deserialize retry policy", ex);
+        }
     }
 
     private <T> Map<UUID, List<T>> groupByWorkflow(List<T> rows, Function<T, UUID> workflowIdFn) {

@@ -1,6 +1,7 @@
 package io.fuseflow.sample;
 
 import io.fuseflow.sdk.annotation.Activity;
+import io.fuseflow.sdk.annotation.Retry;
 import io.fuseflow.sdk.annotation.Workflow;
 import io.fuseflow.sdk.core.ActivityContext;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,7 +31,8 @@ import java.util.Map;
 @Component
 @ConditionalOnProperty(name = "fuseflow.sample.enable-order", havingValue = "true", matchIfMissing = true)
 @Workflow(name = "order-fulfillment",
-        description = "Order processing: validate, charge + pack in parallel, ship, notify (Phase 6)")
+        description = "Order processing: validate, charge + pack in parallel, ship, notify (Phase 6/7)",
+        retry = @Retry(maxAttempts = 3, fixedDelaySeconds = 5))
 public class OrderFulfillmentWorkflow extends AbstractSampleWorker {
 
     public OrderFulfillmentWorkflow(ObjectMapper objectMapper) {
@@ -52,7 +54,11 @@ public class OrderFulfillmentWorkflow extends AbstractSampleWorker {
         return run("packItems", ctx);
     }
 
-    @Activity(id = "ship", dependsOn = {"charge", "pack"})
+    // Per-task override: shipping is the most failure-prone step — retry harder than the
+    // workflow default (3 attempts / 5s). Also demonstrates a non-retryable classification.
+    @Activity(id = "ship", dependsOn = {"charge", "pack"},
+            retry = @Retry(maxAttempts = 5, fixedDelaySeconds = 2,
+                    nonRetryableExceptions = "java.lang.IllegalArgumentException"))
     public Map<String, Object> shipOrder(ActivityContext ctx) {
         return run("shipOrder", ctx);
     }

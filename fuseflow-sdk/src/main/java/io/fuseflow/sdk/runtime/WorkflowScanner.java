@@ -1,9 +1,11 @@
 package io.fuseflow.sdk.runtime;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 import io.fuseflow.common.validation.DagValidator;
 import io.fuseflow.sdk.annotation.Activity;
+import io.fuseflow.sdk.annotation.Retry;
 import io.fuseflow.sdk.annotation.Step;
 import io.fuseflow.sdk.annotation.Workflow;
 import org.slf4j.Logger;
@@ -88,7 +90,8 @@ public class WorkflowScanner implements SmartInitializingSingleton {
 
         String description = workflow.description() == null || workflow.description().isBlank()
                 ? null : workflow.description();
-        WorkflowRequest request = new WorkflowRequest(workflow.name(), description, tasks);
+        WorkflowRequest request = new WorkflowRequest(workflow.name(), description,
+                toPolicy(workflow.retry()), tasks);
 
         List<ApiError.FieldError> errors = dagValidator.validate(request);
         if (!errors.isEmpty()) {
@@ -113,7 +116,7 @@ public class WorkflowScanner implements SmartInitializingSingleton {
         for (Step step : steps) {
             List<String> dependsOn = step.dependsOn() == null || step.dependsOn().length == 0
                     ? null : List.of(step.dependsOn());
-            tasks.add(new WorkflowRequest.Task(step.id(), step.activity(), dependsOn));
+            tasks.add(new WorkflowRequest.Task(step.id(), step.activity(), dependsOn, toPolicy(step.retry())));
         }
         return tasks;
     }
@@ -136,10 +139,24 @@ public class WorkflowScanner implements SmartInitializingSingleton {
                     ? activityName : annotation.id();
             List<String> dependsOn = annotation.dependsOn() == null || annotation.dependsOn().length == 0
                     ? null : List.of(annotation.dependsOn());
-            tasks.add(new WorkflowRequest.Task(taskId, activityName, dependsOn));
+            tasks.add(new WorkflowRequest.Task(taskId, activityName, dependsOn, toPolicy(annotation.retry())));
         }
         tasks.sort(Comparator.comparing(WorkflowRequest.Task::id));
         return tasks;
+    }
+
+    /** Maps a {@code @Retry} annotation to the shared wire record; null when nothing is set. */
+    private static RetryPolicy toPolicy(Retry retry) {
+        if (retry == null) {
+            return null;
+        }
+        RetryPolicy policy = new RetryPolicy(
+                retry.maxAttempts() > 0 ? retry.maxAttempts() : null,
+                retry.fixedDelaySeconds() > 0 ? retry.fixedDelaySeconds() : null,
+                retry.exponentialBackoff() ? Boolean.TRUE : null,
+                retry.backoffMultiplier() > 0 ? retry.backoffMultiplier() : null,
+                retry.nonRetryableExceptions().length > 0 ? List.of(retry.nonRetryableExceptions()) : null);
+        return policy.isEmpty() ? null : policy;
     }
 
     /** Warns (does not fail) when a step references an activity not declared in this project. */

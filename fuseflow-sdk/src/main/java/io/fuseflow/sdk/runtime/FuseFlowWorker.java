@@ -95,7 +95,9 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
         } catch (Exception ex) {
             log.error("Activity {} of execution {} failed: {}",
                     task.activityName(), task.executionId(), ex.getMessage(), ex);
-            resultPublisher.publish(ActivityResultMessage.failed(task, ex.getMessage()));
+            // Phase 7: send the exception class name so the engine can classify the failure as
+            // non-retryable per the retry policy's nonRetryableExceptions.
+            resultPublisher.publish(ActivityResultMessage.failed(task, ex.getClass().getName(), ex.getMessage()));
         }
     }
 

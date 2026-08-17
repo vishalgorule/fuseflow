@@ -94,7 +94,7 @@ public class ExecutionRecovery implements ApplicationRunner {
             List<ActivityExecution> runnable = runnableTaskIds.stream()
                     .flatMap(taskId -> activityRepository.findById(executionId, taskId).stream())
                     .toList();
-            scheduler.schedule(executionId, runnable);
+            scheduler.schedule(executionId, runnable, execution.input());
         }
     }
 }

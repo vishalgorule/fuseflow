@@ -84,9 +84,11 @@ public class ExecutionManager {
         WorkflowExecution execution = new WorkflowExecution(executionId, definition.id(), definition.name(),
                 definition.version(), input, null, WorkflowStatus.RUNNING, 0, now, now, now, null,
                 engineShards.shardOf(executionId));
-        executionRepository.insert(execution);
-
-        activityRepository.insertAll(executionId, DagModel.from(definition));
+        List<DagModel.DagTask> tasks = DagModel.from(definition);
+        // Completion counter = number of DAG tasks (each seeded as one activity row); the last
+        // terminal completion decrements it to 0 and completes the execution (Phase 7 scale).
+        executionRepository.insert(execution, tasks.size());
+        activityRepository.insertAll(executionId, tasks);
         Map<String, Object> startedPayload = Map.of(
                 "workflowId", definition.id().toString(),
                 "workflowName", definition.name(),
@@ -97,7 +99,7 @@ public class ExecutionManager {
         List<ActivityExecution> roots = activityRepository.findForExecution(executionId).stream()
                 .filter(a -> a.remainingDependencies() == 0)
                 .toList();
-        scheduler.schedule(executionId, roots);
+        scheduler.schedule(executionId, roots, input);
 
         return toResponse(executionRepository.findById(executionId).orElseThrow(),
                 activityRepository.findForExecution(executionId));

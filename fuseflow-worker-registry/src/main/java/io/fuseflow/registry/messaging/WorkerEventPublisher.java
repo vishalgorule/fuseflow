@@ -20,16 +20,15 @@ import java.util.UUID;
 /**
  * Publishes worker state-change events to the {@code worker-events} topic (Phase 4,
  * architecture §8): {@code worker_registered}, {@code worker_deregistered}, {@code
- * worker_offline}. Heartbeats stay REST by design (low latency, high frequency) — only
- * transitions are published.
+ * worker_offline}, {@code worker_online}. Heartbeats stay REST by design (low latency, high
+ * frequency) — only transitions are published, and a heartbeat that revives a
+ * DEGRADED/OFFLINE worker publishes {@code worker_online} so observers (the engine's pool
+ * routing table) recover liveness without waiting for a re-registration.
  *
  * <p>Publishing happens only after the surrounding transaction commits (persist → append event
  * → publish), mirroring the engine's after-commit dispatcher; when no transaction is active the
  * event is sent immediately. Gated by {@code fuseflow.registry.events-enabled} so tests and
  * non-messaging deployments can turn it off.
- *
- * <p>A worker revived by a heartbeat is not re-published (heartbeats stay REST); observers see
- * registered → offline, and the worker reappears via the next registration.
  */
 @Component
 public class WorkerEventPublisher {

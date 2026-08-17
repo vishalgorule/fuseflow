@@ -13,11 +13,23 @@ public record WorkflowResponse(
         UUID id,
         String name,
         String description,
+        RetryPolicy retryPolicy,
         List<Task> tasks,
         long version,
         Instant createdAt,
         Instant updatedAt) {
 
-    public record Task(String id, String activity, List<String> dependsOn) {
+    /** Convenience constructor for callers without a retry policy. */
+    public WorkflowResponse(UUID id, String name, String description, List<Task> tasks,
+                            long version, Instant createdAt, Instant updatedAt) {
+        this(id, name, description, null, tasks, version, createdAt, updatedAt);
+    }
+
+    public record Task(String id, String activity, List<String> dependsOn, RetryPolicy retryPolicy) {
+
+        /** Convenience constructor for callers without a per-task retry policy. */
+        public Task(String id, String activity, List<String> dependsOn) {
+            this(id, activity, dependsOn, null);
+        }
     }
 }

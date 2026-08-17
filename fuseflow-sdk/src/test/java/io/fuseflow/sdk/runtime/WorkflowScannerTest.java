@@ -3,6 +3,7 @@ package io.fuseflow.sdk.runtime;
 import io.fuseflow.common.dto.WorkflowRequest;
 import io.fuseflow.common.validation.DagValidator;
 import io.fuseflow.sdk.annotation.Activity;
+import io.fuseflow.sdk.annotation.Retry;
 import io.fuseflow.sdk.annotation.Step;
 import io.fuseflow.sdk.annotation.Steps;
 import io.fuseflow.sdk.annotation.Workflow;
@@ -89,6 +90,48 @@ class WorkflowScannerTest {
             assertThat(tasks.get(0).dependsOn()).containsExactly("validate");
             assertThat(tasks.get(3).dependsOn()).containsExactlyInAnyOrder("charge", "pack");
             assertThat(tasks.get(4).dependsOn()).isNull();
+        }
+    }
+
+    @Test
+    void mapsRetryPoliciesFromAnnotations() {
+        // Phase 7: @Retry on the workflow (default) and on steps/activities (per-task override)
+        // maps onto the shared wire record; unset knobs stay null so the next level can decide.
+        try (AnnotationConfigApplicationContext context =
+                     new AnnotationConfigApplicationContext(RetryPolicyConfig.class)) {
+            WorkflowRegistration registration = context.getBean(WorkflowRegistry.class).all().get(0);
+            WorkflowRequest request = registration.request();
+
+            assertThat(request.retryPolicy()).isNotNull();
+            assertThat(request.retryPolicy().maxAttempts()).isEqualTo(4);
+            assertThat(request.retryPolicy().fixedDelaySeconds()).isEqualTo(3);
+            assertThat(request.retryPolicy().exponentialBackoff()).isTrue();
+            assertThat(request.retryPolicy().backoffMultiplier()).isEqualTo(2.0);
+            assertThat(request.retryPolicy().nonRetryableExceptions())
+                    .containsExactly("java.lang.IllegalArgumentException");
+
+            // Per-task override on a @Step.
+            assertThat(request.tasks()).extracting(WorkflowRequest.Task::id)
+                    .containsExactly("a", "b");
+            assertThat(request.tasks().get(0).retryPolicy()).isNotNull();
+            assertThat(request.tasks().get(0).retryPolicy().maxAttempts()).isEqualTo(1);
+            assertThat(request.tasks().get(0).retryPolicy().fixedDelaySeconds()).isNull();
+            // Task without a policy falls through to the workflow policy.
+            assertThat(request.tasks().get(1).retryPolicy()).isNull();
+        }
+    }
+
+    @Test
+    void mapsRetryPolicyOnSelfContainedActivityMethods() {
+        try (AnnotationConfigApplicationContext context =
+                     new AnnotationConfigApplicationContext(SelfContainedRetryConfig.class)) {
+            WorkflowRequest request = context.getBean(WorkflowRegistry.class).all().get(0).request();
+            // Workflow-level policy is present; per-method @Retry overrides it.
+            assertThat(request.retryPolicy().maxAttempts()).isEqualTo(5);
+            assertThat(request.tasks()).extracting(WorkflowRequest.Task::id)
+                    .containsExactly("charge", "validate");
+            assertThat(request.tasks().get(0).retryPolicy().maxAttempts()).isEqualTo(1);
+            assertThat(request.tasks().get(1).retryPolicy()).isNull();
         }
     }
 
@@ -182,6 +225,27 @@ class WorkflowScannerTest {
     static class ContainerWorkflow {
     }
 
+    @Workflow(name = "retry-policy", description = "desc",
+            retry = @Retry(maxAttempts = 4, fixedDelaySeconds = 3, exponentialBackoff = true,
+                    backoffMultiplier = 2.0, nonRetryableExceptions = "java.lang.IllegalArgumentException"))
+    @Step(id = "a", activity = "actA", retry = @Retry(maxAttempts = 1))
+    @Step(id = "b", activity = "actB")
+    static class RetryPolicyWorkflow {
+    }
+
+    @Workflow(name = "self-contained-retry", retry = @Retry(maxAttempts = 5, fixedDelaySeconds = 2))
+    static class SelfContainedRetryWorkflow {
+        @Activity(id = "validate")
+        public String validate(ActivityContext ctx) {
+            return null;
+        }
+
+        @Activity(id = "charge", dependsOn = "validate", retry = @Retry(maxAttempts = 1))
+        public String charge(ActivityContext ctx) {
+            return null;
+        }
+    }
+
     @Workflow(name = "cyclic")
     @Step(id = "a", activity = "actA", dependsOn = "b")
     @Step(id = "b", activity = "actB", dependsOn = "a")
@@ -254,6 +318,22 @@ class WorkflowScannerTest {
         @Bean
         ContainerWorkflow containerWorkflow() {
             return new ContainerWorkflow();
+        }
+    }
+
+    @Configuration
+    static class RetryPolicyConfig extends BaseConfig {
+        @Bean
+        RetryPolicyWorkflow retryPolicyWorkflow() {
+            return new RetryPolicyWorkflow();
+        }
+    }
+
+    @Configuration
+    static class SelfContainedRetryConfig extends BaseConfig {
+        @Bean
+        SelfContainedRetryWorkflow selfContainedRetryWorkflow() {
+            return new SelfContainedRetryWorkflow();
         }
     }
 

@@ -1,13 +1,12 @@
 package io.fuseflow.engine.service;
 
 import io.fuseflow.engine.dispatch.ActivityResult;
-import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
-import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
+import io.fuseflow.engine.retry.RetryManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -20,15 +19,18 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Result handler (Phase 2 plan §4 task 5): persists activity output/failure, appends the
+ * Result handler (Phase 2 plan §4 task 5): persists activity output, appends the
  * corresponding event, fans out to dependents, and drives the execution to a terminal state.
  *
  * <p>Idempotency: results are accepted only while the activity is in-flight ({@code SCHEDULED}
- * or {@code STARTED}), and the terminal transition itself is a version-guarded conditional
- * update — duplicate or stale results are ignored. Since Phase 4 (Kafka) a worker may complete
- * before its STARTED signal is consumed, so {@code SCHEDULED} is treated as in-flight too.
- * Phase 2 failure policy is minimal: one failed activity fails the whole workflow (retries
- * arrive in Phase 5).
+ * or {@code STARTED}) <b>and</b> the result's {@code attempt} matches the row's attempt — a
+ * stale redelivery from a previous retry attempt is ignored. The terminal transition itself is
+ * a version-guarded conditional update. Since Phase 4 (Kafka) a worker may complete before its
+ * STARTED signal is consumed, so {@code SCHEDULED} is treated as in-flight too.
+ *
+ * <p>Failures (Phase 7, FR-6) are routed to the {@link RetryManager}, which retries per the
+ * resolved policy (task → workflow → engine defaults) or fails the activity + workflow and
+ * dead-letters it when attempts are exhausted or the failure is non-retryable.
  */
 @Service
 public class ResultHandler {
@@ -39,20 +41,23 @@ public class ResultHandler {
     private final WorkflowExecutionRepository executionRepository;
     private final EventStore eventStore;
     private final Scheduler scheduler;
-    private final WorkflowEventPublisher workflowEventPublisher;
+    private final RetryManager retryManager;
+    private final WorkflowFinalizer workflowFinalizer;
     private final ObjectMapper objectMapper;
 
     public ResultHandler(ActivityExecutionRepository activityRepository,
                          WorkflowExecutionRepository executionRepository,
                          EventStore eventStore,
                          Scheduler scheduler,
-                         WorkflowEventPublisher workflowEventPublisher,
+                         RetryManager retryManager,
+                         WorkflowFinalizer workflowFinalizer,
                          ObjectMapper objectMapper) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.eventStore = eventStore;
         this.scheduler = scheduler;
-        this.workflowEventPublisher = workflowEventPublisher;
+        this.retryManager = retryManager;
+        this.workflowFinalizer = workflowFinalizer;
         this.objectMapper = objectMapper;
     }
 
@@ -60,9 +65,11 @@ public class ResultHandler {
     public void handleResult(ActivityResult result) {
         ActivityExecution activity = activityRepository.findById(result.executionId(), result.taskId()).orElse(null);
         if (activity == null || (activity.status() != ActivityStatus.STARTED
-                && activity.status() != ActivityStatus.SCHEDULED)) {
-            // Duplicate or stale result (e.g. re-delivery after recovery) — ignore.
-            log.debug("Ignoring stale result for task {} of execution {}", result.taskId(), result.executionId());
+                && activity.status() != ActivityStatus.SCHEDULED) || result.attempt() != activity.attempt()) {
+            // Duplicate or stale result (re-delivery after recovery, or from a previous
+            // retry attempt) — ignore.
+            log.debug("Ignoring stale result for task {} of execution {} (attempt {})",
+                    result.taskId(), result.executionId(), result.attempt());
             return;
         }
 
@@ -74,47 +81,16 @@ public class ResultHandler {
             eventStore.append(result.executionId(), "ActivityCompleted", completedPayload(activity, result));
             scheduler.onActivityCompleted(result.executionId(), result.taskId(), activity.dependents());
         } else {
-            if (!activityRepository.markFailed(result.executionId(), result.taskId(),
-                    result.error(), activity.version())) {
-                return;
-            }
-            eventStore.append(result.executionId(), "ActivityFailed",
-                    payload("taskId", result.taskId(), "activityName", activity.activityName(),
-                            "error", result.error()));
-            failWorkflow(result.executionId(), result.error());
+            // Phase 7: retry per policy or fail terminally (ActivityFailed + dead-letter + workflow failed).
+            retryManager.onActivityFailed(result);
             return;
         }
 
-        if (activityRepository.countNonTerminal(result.executionId()) == 0) {
-            completeWorkflow(result.executionId());
-        }
-    }
-
-    /** RUNNING → COMPLETED (guarded); appends WorkflowCompleted when the transition wins. */
-    @Transactional
-    public void completeWorkflow(UUID executionId) {
-        WorkflowExecution execution = executionRepository.findById(executionId).orElse(null);
-        if (execution == null) {
-            return;
-        }
-        if (executionRepository.markCompleted(executionId, execution.version())) {
-            eventStore.append(executionId, "WorkflowCompleted", Map.of());
-            workflowEventPublisher.publish(executionId, "WorkflowCompleted", Map.of());
-            log.info("Workflow execution {} completed", executionId);
-        }
-    }
-
-    /** RUNNING → FAILED (guarded); appends WorkflowFailed when the transition wins. */
-    @Transactional
-    public void failWorkflow(UUID executionId, String error) {
-        WorkflowExecution execution = executionRepository.findById(executionId).orElse(null);
-        if (execution == null) {
-            return;
-        }
-        if (executionRepository.markFailed(executionId, execution.version())) {
-            eventStore.append(executionId, "WorkflowFailed", payload("error", error));
-            workflowEventPublisher.publish(executionId, "WorkflowFailed", payload("error", error));
-            log.info("Workflow execution {} failed: {}", executionId, error);
+        // Phase 7 scale: per-execution completion counter — decremented transactionally with
+        // the completion, so exactly one (the last) observes 0 and completes the execution. This
+        // replaces the per-completion COUNT(*) scan with a single guarded O(1) decrement.
+        if (executionRepository.decrementRemainingActivities(result.executionId()) == 0) {
+            workflowFinalizer.completeWorkflow(result.executionId());
         }
     }
 
@@ -134,15 +110,5 @@ public class ResultHandler {
         } catch (Exception ex) {
             return objectMapper.getNodeFactory().textNode(json);
         }
-    }
-
-    private static Map<String, Object> payload(String... kv) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        for (int i = 0; i < kv.length; i += 2) {
-            if (kv[i + 1] != null) {
-                payload.put(kv[i], kv[i + 1]);
-            }
-        }
-        return payload;
     }
 }

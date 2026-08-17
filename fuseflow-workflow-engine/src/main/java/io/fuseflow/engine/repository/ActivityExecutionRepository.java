@@ -51,12 +51,14 @@ public class ActivityExecutionRepository {
         }
     }
 
+    private static final String SELECT_COLUMNS =
+            "workflow_execution_id, task_id, activity_name, status, remaining_dependencies, dependents,"
+                    + " attempt, output, error, retry_due_at, error_type, version, created_at, updated_at";
+
     public List<ActivityExecution> findForExecution(UUID executionId) {
         return jdbc.sql("""
-                        SELECT workflow_execution_id, task_id, activity_name, status, remaining_dependencies,
-                               dependents, attempt, output, error, version, created_at, updated_at
-                        FROM %s WHERE workflow_execution_id = :executionId ORDER BY task_id
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE workflow_execution_id = :executionId ORDER BY task_id
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("executionId", executionId)
                 .query(this::mapRow)
                 .list();
@@ -64,10 +66,8 @@ public class ActivityExecutionRepository {
 
     public Optional<ActivityExecution> findById(UUID executionId, String taskId) {
         return jdbc.sql("""
-                        SELECT workflow_execution_id, task_id, activity_name, status, remaining_dependencies,
-                               dependents, attempt, output, error, version, created_at, updated_at
-                        FROM %s WHERE workflow_execution_id = :executionId AND task_id = :taskId
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE workflow_execution_id = :executionId AND task_id = :taskId
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("executionId", executionId)
                 .param("taskId", taskId)
                 .query(this::mapRow)
@@ -83,11 +83,9 @@ public class ActivityExecutionRepository {
             return List.of();
         }
         return jdbc.sql("""
-                        SELECT workflow_execution_id, task_id, activity_name, status, remaining_dependencies,
-                               dependents, attempt, output, error, version, created_at, updated_at
-                        FROM %s WHERE workflow_execution_id IN (:executionIds)
+                        SELECT %s FROM %s WHERE workflow_execution_id IN (:executionIds)
                         ORDER BY workflow_execution_id, task_id
-                        """.formatted(TABLE))
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("executionIds", executionIds)
                 .query(this::mapRow)
                 .list();
@@ -106,29 +104,21 @@ public class ActivityExecutionRepository {
                 .list();
     }
 
-    /** Activities that were handed to a dispatcher but never finished (re-dispatch on recovery). */
+    /**
+     * Activities that were handed to a dispatcher but never finished (re-dispatch on recovery).
+     * Phase 7: retry-waiting rows (SCHEDULED with a future {@code retry_due_at}) are on the
+     * retry clock, not the dispatch clock — recovery must not fire them early, so they are
+     * excluded until due.
+     */
     public List<ActivityExecution> findStale(UUID executionId) {
         return jdbc.sql("""
-                        SELECT workflow_execution_id, task_id, activity_name, status, remaining_dependencies,
-                               dependents, attempt, output, error, version, created_at, updated_at
-                        FROM %s
+                        SELECT %s FROM %s
                         WHERE workflow_execution_id = :executionId AND status IN ('SCHEDULED', 'STARTED')
-                        """.formatted(TABLE))
+                          AND (retry_due_at IS NULL OR retry_due_at <= now())
+                        """.formatted(SELECT_COLUMNS, TABLE))
                 .param("executionId", executionId)
                 .query(this::mapRow)
                 .list();
-    }
-
-    /** Number of activities still in a non-terminal state (0 → workflow can complete). */
-    public long countNonTerminal(UUID executionId) {
-        return jdbc.sql("""
-                        SELECT COUNT(*) FROM %s
-                        WHERE workflow_execution_id = :executionId AND status IN ('PENDING', 'SCHEDULED', 'STARTED')
-                        """.formatted(TABLE))
-                .param("executionId", executionId)
-                .query((rs, rowNum) -> rs.getLong(1))
-                .optional()
-                .orElse(0L);
     }
 
     // ---------------------------------------------------------------- transitions
@@ -189,39 +179,133 @@ public class ActivityExecutionRepository {
 
     /**
      * In-flight → FAILED with error message (idempotent; false if stale/duplicate completion).
-     * Accepts SCHEDULED or STARTED (see {@link #markCompleted}).
+     * Accepts SCHEDULED or STARTED (see {@link #markCompleted}); records the exception class
+     * name for the ActivityFailed/dead-letter surface.
      */
-    public boolean markFailed(UUID executionId, String taskId, String error, long expectedVersion) {
+    public boolean markFailed(UUID executionId, String taskId, String error, String errorType, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
-                        SET status = 'FAILED', error = :error, version = version + 1, updated_at = :now
+                        SET status = 'FAILED', error = :error, error_type = :errorType,
+                            version = version + 1, updated_at = :now
                         WHERE workflow_execution_id = :executionId AND task_id = :taskId
                           AND status IN ('SCHEDULED', 'STARTED') AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("executionId", executionId)
                 .param("taskId", taskId)
                 .param("error", error)
+                .param("errorType", errorType)
                 .param("expectedVersion", expectedVersion)
                 .param("now", Timestamp.from(Instant.now()))
                 .update() == 1;
     }
 
+    // ---------------------------------------------------------------- retries (Phase 7)
+
     /**
-     * Decrements a dependent activity's remaining-dependency count. Returns {@code false} when
-     * the row does not exist, is no longer PENDING, or the counter is already 0 (concurrent
+     * A failed-but-retryable attempt: bumps the attempt, parks the row as SCHEDULED on the
+     * due-time queue, and records the failure for diagnostics. The retry poller re-dispatches
+     * with the new attempt when {@code retryDueAt} arrives.
+     */
+    public boolean markRetryWaiting(UUID executionId, String taskId, int newAttempt,
+                                    Instant retryDueAt, String error, String errorType, long expectedVersion) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET status = 'SCHEDULED', attempt = :attempt, retry_due_at = :dueAt,
+                            error = :error, error_type = :errorType,
+                            version = version + 1, updated_at = :now
+                        WHERE workflow_execution_id = :executionId AND task_id = :taskId
+                          AND status IN ('SCHEDULED', 'STARTED') AND version = :expectedVersion
+                        """.formatted(TABLE))
+                .param("executionId", executionId)
+                .param("taskId", taskId)
+                .param("attempt", newAttempt)
+                .param("dueAt", Timestamp.from(retryDueAt))
+                .param("error", error)
+                .param("errorType", errorType)
+                .param("now", Timestamp.from(Instant.now()))
+                .param("expectedVersion", expectedVersion)
+                .update() == 1;
+    }
+
+    /**
+     * Takes a due retry off the clock (guarded). The poller then re-dispatches with the row's
+     * current attempt; a concurrent poller that already claimed it gets {@code false}.
+     */
+    public boolean clearRetryDue(UUID executionId, String taskId, long expectedVersion) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET retry_due_at = NULL, version = version + 1, updated_at = :now
+                        WHERE workflow_execution_id = :executionId AND task_id = :taskId
+                          AND status = 'SCHEDULED' AND retry_due_at IS NOT NULL AND version = :expectedVersion
+                        """.formatted(TABLE))
+                .param("executionId", executionId)
+                .param("taskId", taskId)
+                .param("now", Timestamp.from(Instant.now()))
+                .param("expectedVersion", expectedVersion)
+                .update() == 1;
+    }
+
+    /**
+     * Due retries (SCHEDULED, retry clock elapsed) for the retry poller — oldest first, bounded
+     * to {@code limit} per cycle (Phase 7 scale): a burst of due retries (e.g. after a
+     * correlated outage) drains across cycles instead of loading every due row into memory at
+     * once. Unclaimed rows stay due (oldest first → no starvation) and are picked up next cycle;
+     * the version-guarded claim prevents concurrent pollers from double-dispatching.
+     */
+    public List<ActivityExecution> findDueRetries(int limit) {
+        return jdbc.sql("""
+                        SELECT %s FROM %s
+                        WHERE status = 'SCHEDULED' AND retry_due_at IS NOT NULL AND retry_due_at <= now()
+                        ORDER BY retry_due_at
+                        LIMIT :limit
+                        """.formatted(SELECT_COLUMNS, TABLE))
+                .param("limit", limit)
+                .query(this::mapRow)
+                .list();
+    }
+
+    /** SCHEDULED activities that never started within the window (start-timeout scan). */
+    public List<ActivityExecution> findStartTimeouts(Instant cutoff) {
+        return jdbc.sql("""
+                        SELECT %s FROM %s
+                        WHERE status = 'SCHEDULED' AND retry_due_at IS NULL AND updated_at < :cutoff
+                        """.formatted(SELECT_COLUMNS, TABLE))
+                .param("cutoff", Timestamp.from(cutoff))
+                .query(this::mapRow)
+                .list();
+    }
+
+    /** STARTED activities that produced no result within the window (execution-timeout scan). */
+    public List<ActivityExecution> findExecutionTimeouts(Instant cutoff) {
+        return jdbc.sql("""
+                        SELECT %s FROM %s
+                        WHERE status = 'STARTED' AND updated_at < :cutoff
+                        """.formatted(SELECT_COLUMNS, TABLE))
+                .param("cutoff", Timestamp.from(cutoff))
+                .query(this::mapRow)
+                .list();
+    }
+
+    /**
+     * Decrements a dependent activity's remaining-dependency count in one round trip, returning
+     * the <em>updated</em> row (fresh counter + version) when the decrement won — the caller
+     * schedules the dependent iff its counter reached 0, without a follow-up SELECT. Empty when
+     * the row does not exist, is no longer PENDING, or the counter is already 0 (a concurrent
      * decrement from a sibling branch already satisfied it). Never goes negative.
      */
-    public boolean decrement(UUID executionId, String taskId) {
+    public Optional<ActivityExecution> decrement(UUID executionId, String taskId) {
         return jdbc.sql("""
                         UPDATE %s
                         SET remaining_dependencies = remaining_dependencies - 1, version = version + 1, updated_at = :now
                         WHERE workflow_execution_id = :executionId AND task_id = :taskId
                           AND status = 'PENDING' AND remaining_dependencies > 0
-                        """.formatted(TABLE))
+                        RETURNING %s
+                        """.formatted(TABLE, SELECT_COLUMNS))
                 .param("executionId", executionId)
                 .param("taskId", taskId)
                 .param("now", Timestamp.from(Instant.now()))
-                .update() == 1;
+                .query(this::mapRow)
+                .optional();
     }
 
     // ---------------------------------------------------------------- helpers
@@ -235,6 +319,7 @@ public class ActivityExecutionRepository {
     }
 
     private ActivityExecution mapRow(ResultSet rs, int rowNum) throws SQLException {
+        Timestamp retryDueAt = rs.getTimestamp("retry_due_at");
         return new ActivityExecution(
                 rs.getObject("workflow_execution_id", UUID.class),
                 rs.getString("task_id"),
@@ -245,6 +330,8 @@ public class ActivityExecutionRepository {
                 rs.getInt("attempt"),
                 rs.getString("output"),
                 rs.getString("error"),
+                retryDueAt == null ? null : retryDueAt.toInstant(),
+                rs.getString("error_type"),
                 rs.getLong("version"),
                 rs.getTimestamp("created_at").toInstant(),
                 rs.getTimestamp("updated_at").toInstant());

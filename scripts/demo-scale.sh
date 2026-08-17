@@ -179,16 +179,26 @@ fi
 log_marker() {
     # Track both the single `make workers` worker (/tmp/fuseflow-workers.log) and the fleet
     # workers (/tmp/fuseflow-workers-*.log) so the per-worker delta covers whichever is live.
+    # Only log files still held open by a live process are included — a stale log from a
+    # previous session's dead worker (e.g. media workers after the config went 8 io / 0 media)
+    # would otherwise show up as a spurious 0-delta row in the summary.
     local logs=()
-    if [ -f /tmp/fuseflow-workers.log ]; then
+    if [ -f /tmp/fuseflow-workers.log ] && lsof /tmp/fuseflow-workers.log >/dev/null 2>&1; then
         logs+=(/tmp/fuseflow-workers.log)
     fi
     if ls /tmp/fuseflow-workers-*.log >/dev/null 2>&1; then
-        logs+=(/tmp/fuseflow-workers-*.log)
+        for f in /tmp/fuseflow-workers-*.log; do
+            if lsof "$f" >/dev/null 2>&1; then
+                logs+=("$f")
+            fi
+        done
     fi
     if [ "${#logs[@]}" -gt 0 ]; then
         for f in "${logs[@]}"; do
-            grep -c 'Executing ' "$f" 2>/dev/null || echo 0
+            # grep -c prints "0" AND exits 1 when there are no matches, so `|| echo 0` would
+            # emit a second line and misalign baseline.txt with logs.txt → the summary delta
+            # arithmetic then reads the wrong/blank baseline. `|| true` keeps the single count.
+            grep -c 'Executing ' "$f" 2>/dev/null || true
         done > "$WORK_DIR/baseline.txt"
         printf '%s\n' "${logs[@]}" > "$WORK_DIR/logs.txt"
     fi
@@ -200,20 +210,68 @@ log_marker
 STARTED=0
 echo
 echo "=== starting executions (mode=$MODE, concurrency=$CONCURRENCY) ==="
+# Pace the start: keep at most $CONCURRENCY executions in flight so the worker fleet's pool
+# queue never outruns its drain rate (a task that sits in the queue past the engine's start
+# timeout gets retried and eventually fails). Concurrency here is a rate cap, not parallelism.
+IN_FLIGHT_FILE="$WORK_DIR/inflight.txt"
+: > "$IN_FLIGHT_FILE"
+
+# Fetch execution statuses in parallel (16-way). Replaces the old serial eng_get loop —
+# polling 200 executions one curl at a time was the dominant cost of a fleet run's poll phase.
+# one_status is exported so xargs subshells can call it without nested-quote gymnastics.
+one_status() {  # $1=idx $2=id -> "<idx> <id> <status>" (first live engine)
+    local idx=$1 id=$2 s="?" body
+    for p in 8082 8084; do
+        body=$(curl -s --max-time 3 "localhost:$p/api/v1/executions/$id" 2>/dev/null || true)
+        if [ -n "$body" ]; then
+            s=$(printf '%s' "$body" | grep -o '"status":"[A-Z]*"' | head -1 | cut -d'"' -f4)
+            [ -n "$s" ] && break
+        fi
+    done
+    printf '%s %s %s\n' "$idx" "$id" "${s:-?}"
+}
+export -f one_status
+
+fetch_statuses() {  # reads "<idx> <id>" lines on stdin, prints "<idx> <id> <status>"
+    xargs -P 16 -n 2 bash -c 'one_status "$1" "$2"' _
+}
+
+in_flight() {  # count started executions that have not reached a terminal state yet
+    awk '{print "0 " $0}' "$IN_FLIGHT_FILE" \
+        | xargs -P 16 -n 2 bash -c 'one_status "$1" "$2"' _ \
+        | awk '$3 != "COMPLETED" && $3 != "FAILED" {n++} END {print n+0}'
+}
+
+pace() {  # block until fewer than CONCURRENCY executions are in flight
+    while [ "$(in_flight)" -ge "$CONCURRENCY" ]; do
+        sleep 2
+    done
+}
+
 if [ "$MODE" = "fleet" ]; then
     for round in $(seq 1 "$PER_WORKFLOW"); do
+        # Pace ONCE per round (FLEET_SIZE starts), not before every single start: in_flight()
+        # re-polls the whole growing id set, so calling it 200× (once per execution) turns into
+        # ~40k HTTP calls and dominates wall time. Per-round pacing still caps in-flight at
+        # CONCURRENCY + FLEET_SIZE, which is enough to protect the pool queue.
+        pace
         for i in $(seq 0 $((FLEET_SIZE - 1))); do
             f="$RESP_DIR/wf$i-$round.json"
             curl -s -X POST "$ENG_URL/api/v1/executions" -H 'Content-Type: application/json' \
                 -d "{\"workflowId\": \"${WF_IDS[$i]}\", \"input\": {\"batch\": $round}}" > "$f"
+            id=$(python3 -c "import sys, json; print(json.load(open('$f')).get('id',''))" 2>/dev/null || true)
+            [ -n "$id" ] && echo "$id" >> "$IN_FLIGHT_FILE"
             STARTED=$((STARTED + 1))
         done
     done
 else
     for i in $(seq 1 "$COUNT"); do
+        pace
         f="$RESP_DIR/i$i.json"
         curl -s -X POST "$ENG_URL/api/v1/executions" -H 'Content-Type: application/json' \
             -d "{\"workflowId\": \"$WF_ID\", \"input\": {\"run\": $i}}" > "$f"
+        id=$(python3 -c "import sys, json; print(json.load(open('$f')).get('id',''))" 2>/dev/null || true)
+        [ -n "$id" ] && echo "$id" >> "$IN_FLIGHT_FILE"
         STARTED=$((STARTED + 1))
     done
 fi
@@ -277,8 +335,7 @@ while :; do
     if [ "$MODE" = "fleet" ]; then
         for i in $(seq 0 $((FLEET_SIZE - 1))); do WF_COMPLETED[$i]=0; WF_FAILED[$i]=0; done
     fi
-    while read -r idx id; do
-        status=$(eng_get "/api/v1/executions/$id" | python3 -c "import sys, json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "?")
+    while read -r idx id status; do
         case "$status" in
             COMPLETED)
                 COMPLETED=$((COMPLETED + 1))
@@ -288,7 +345,7 @@ while :; do
                 [ "$MODE" = "fleet" ] && WF_FAILED[$idx]=$((WF_FAILED[$idx] + 1));;
             *) RUNNING=$((RUNNING + 1));;
         esac
-    done < "$IDS_FILE"
+    done < <(fetch_statuses < "$IDS_FILE")
     if [ "$RUNNING" -eq 0 ]; then
         break
     fi
@@ -332,7 +389,7 @@ if [ -f "$WORK_DIR/logs.txt" ]; then
     i=0
     while read -r logfile; do
         baseline=$(sed -n "$((i + 1))p" "$WORK_DIR/baseline.txt")
-        now=$(grep -c 'Executing ' "$logfile" 2>/dev/null || echo 0)
+        now=$(grep -c 'Executing ' "$logfile" 2>/dev/null || true)
         delta=$((now - baseline))
         echo "    $(basename "$logfile" .log): $delta"
         i=$((i + 1))

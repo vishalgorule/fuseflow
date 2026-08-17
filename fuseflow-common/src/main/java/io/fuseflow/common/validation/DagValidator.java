@@ -1,6 +1,7 @@
 package io.fuseflow.common.validation;
 
 import io.fuseflow.common.dto.ApiError;
+import io.fuseflow.common.dto.RetryPolicy;
 import io.fuseflow.common.dto.WorkflowRequest;
 
 import java.util.ArrayList;
@@ -36,6 +37,8 @@ public final class DagValidator {
             errors.add(new ApiError.FieldError("name", "name is required"));
         }
 
+        validateRetryPolicy(errors, "retryPolicy", request.retryPolicy());
+
         List<WorkflowRequest.Task> tasks = request.tasks();
         if (tasks == null || tasks.isEmpty()) {
             errors.add(new ApiError.FieldError("tasks", "at least one task is required"));
@@ -60,6 +63,7 @@ public final class DagValidator {
                 String taskId = task.id() == null ? "" : task.id();
                 errors.add(new ApiError.FieldError(field + ".activity", "activity is required for task '" + taskId + "'"));
             }
+            validateRetryPolicy(errors, field + ".retryPolicy", task.retryPolicy());
         }
 
         // Dependencies: blank entries + references to undefined tasks.
@@ -87,6 +91,31 @@ public final class DagValidator {
         }
 
         return List.copyOf(errors);
+    }
+
+    /** Validates a retry policy (Phase 7, FR-6): bounds on attempts/delays, non-blank patterns. */
+    private static void validateRetryPolicy(List<ApiError.FieldError> errors, String field, RetryPolicy policy) {
+        if (policy == null) {
+            return;
+        }
+        if (policy.maxAttempts() != null && policy.maxAttempts() < 1) {
+            errors.add(new ApiError.FieldError(field + ".maxAttempts", "maxAttempts must be at least 1"));
+        }
+        if (policy.fixedDelaySeconds() != null && policy.fixedDelaySeconds() < 0) {
+            errors.add(new ApiError.FieldError(field + ".fixedDelaySeconds", "fixedDelaySeconds must not be negative"));
+        }
+        if (policy.backoffMultiplier() != null && policy.backoffMultiplier() <= 1.0) {
+            errors.add(new ApiError.FieldError(field + ".backoffMultiplier", "backoffMultiplier must be greater than 1"));
+        }
+        if (policy.nonRetryableExceptions() != null) {
+            for (int i = 0; i < policy.nonRetryableExceptions().size(); i++) {
+                String pattern = policy.nonRetryableExceptions().get(i);
+                if (pattern == null || pattern.isBlank()) {
+                    errors.add(new ApiError.FieldError(field + ".nonRetryableExceptions[" + i + "]",
+                            "exception pattern must not be blank"));
+                }
+            }
+        }
     }
 
     /**

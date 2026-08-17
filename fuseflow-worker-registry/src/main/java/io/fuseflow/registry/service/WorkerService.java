@@ -73,10 +73,19 @@ public class WorkerService {
 
     @Transactional
     public void heartbeat(UUID id) {
-        if (workerRepository.touchHeartbeat(id) == 0) {
-            throw ApiException.notFound("worker_not_found", "Worker '" + id + "' does not exist");
-        }
+        Worker worker = workerRepository.findById(id)
+                .orElseThrow(() -> ApiException.notFound("worker_not_found", "Worker '" + id + "' does not exist"));
+        boolean revived = worker.status() != WorkerStatus.ONLINE;
+        workerRepository.touchHeartbeat(id);
         workerRepository.appendHeartbeat(id);
+        // A heartbeat revives a DEGRADED/OFFLINE worker to ONLINE. Observers (the engine's
+        // pool routing table) only learn liveness via worker-events, so publish a revival
+        // event — otherwise a transient heartbeat gap leaves the pool unroutable until the
+        // worker next re-registers (Phase 5 HA: routing must self-heal on revival).
+        if (revived) {
+            workerEventPublisher.publish(id, "worker_online",
+                    Map.of("lastHeartbeatAt", worker.lastHeartbeatAt().toString()));
+        }
     }
 
     @Transactional

@@ -78,7 +78,7 @@ class ExecutionRecoveryTest {
         verify(afterCommitDispatcher).runAfterCommit(action.capture());
         action.getValue().run();
         verify(taskDispatcher).dispatch(any(ActivityTask.class));
-        verify(scheduler).schedule(eq(EXECUTION), eq(List.of(runnable)));
+        verify(scheduler).schedule(eq(EXECUTION), eq(List.of(runnable)), eq("{}"));
     }
 
     @Test

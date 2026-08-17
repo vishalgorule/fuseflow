@@ -58,7 +58,7 @@ class SchedulerTest {
         ActivityExecution root = pending("a", 0, List.of("b"), 3);
         when(activityRepository.markScheduled(EXECUTION, "a", 3)).thenReturn(true);
 
-        scheduler.schedule(EXECUTION, List.of(root));
+        scheduler.schedule(EXECUTION, List.of(root), "{\"k\":1}");
 
         verify(eventStore).append(eq(EXECUTION), eq("ActivityScheduled"), any());
         ArgumentCaptor<Runnable> action = ArgumentCaptor.forClass(Runnable.class);
@@ -72,7 +72,7 @@ class SchedulerTest {
         ActivityExecution stale = pending("a", 0, List.of(), 0);
         when(activityRepository.markScheduled(EXECUTION, "a", 0)).thenReturn(false);
 
-        scheduler.schedule(EXECUTION, List.of(stale));
+        scheduler.schedule(EXECUTION, List.of(stale), "{\"k\":1}");
 
         verify(eventStore, never()).append(eq(EXECUTION), eq("ActivityScheduled"), any());
         verify(afterCommitDispatcher, never()).runAfterCommit(any());
@@ -81,21 +81,23 @@ class SchedulerTest {
 
     @Test
     void doesNothingForEmptyActivityList() {
-        scheduler.schedule(EXECUTION, List.of());
+        scheduler.schedule(EXECUTION, List.of(), "{\"k\":1}");
         verify(executionRepository, never()).findById(any());
         verify(afterCommitDispatcher, never()).runAfterCommit(any());
     }
 
     @Test
     void decrementsDependentsAndSchedulesThoseWhoseCounterReachesZero() {
-        // b depends on a (counter 1). After a completes, b's counter drops to 0 → runnable.
-        when(activityRepository.decrement(EXECUTION, "b")).thenReturn(true);
-        when(activityRepository.findById(EXECUTION, "b")).thenReturn(Optional.of(pending("b", 0, List.of("c"), 5)));
+        // b depends on a (counter 1). After a completes, the decrement returns the updated row
+        // (counter 0) in one round trip — no follow-up SELECT — and b becomes runnable.
+        when(activityRepository.decrement(EXECUTION, "b"))
+                .thenReturn(Optional.of(pending("b", 0, List.of("c"), 5)));
         when(activityRepository.markScheduled(EXECUTION, "b", 5)).thenReturn(true);
 
         scheduler.onActivityCompleted(EXECUTION, "a", List.of("b"));
 
         verify(activityRepository).decrement(EXECUTION, "b");
+        verify(activityRepository, never()).findById(eq(EXECUTION), any());
         verify(activityRepository).markScheduled(EXECUTION, "b", 5);
         verify(eventStore).append(eq(EXECUTION), eq("ActivityScheduled"), any());
     }
@@ -103,23 +105,25 @@ class SchedulerTest {
     @Test
     void doesNotScheduleDependentsWhoseCounterIsStillPositive() {
         // e depends on c AND d (counter 2). c completes → counter 1 → still PENDING.
-        when(activityRepository.decrement(EXECUTION, "e")).thenReturn(true);
-        when(activityRepository.findById(EXECUTION, "e")).thenReturn(Optional.of(pending("e", 1, List.of(), 9)));
+        when(activityRepository.decrement(EXECUTION, "e"))
+                .thenReturn(Optional.of(pending("e", 1, List.of(), 9)));
 
         scheduler.onActivityCompleted(EXECUTION, "c", List.of("e"));
 
         verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("e"), anyLong());
+        verify(executionRepository, never()).findById(any());
         verify(taskDispatcher, never()).dispatch(any());
     }
 
     @Test
     void skipsDecrementWhenDependentRowIsGoneOrAlreadySatisfied() {
-        // A sibling branch already decremented the counter to 0 → decrement no-ops.
-        when(activityRepository.decrement(EXECUTION, "e")).thenReturn(false);
+        // A sibling branch already decremented the counter to 0 → decrement no-ops (empty).
+        when(activityRepository.decrement(EXECUTION, "e")).thenReturn(Optional.empty());
 
         scheduler.onActivityCompleted(EXECUTION, "d", List.of("e"));
 
         verify(activityRepository, never()).findById(eq(EXECUTION), eq("e"));
         verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("e"), anyLong());
+        verify(executionRepository, never()).findById(any());
     }
 }

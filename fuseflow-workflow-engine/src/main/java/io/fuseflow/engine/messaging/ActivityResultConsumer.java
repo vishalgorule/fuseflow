@@ -60,9 +60,9 @@ public class ActivityResultConsumer {
             switch (message.type()) {
                 case STARTED -> handleStarted(message);
                 case COMPLETED -> resultHandler.handleResult(
-                        toResult(message, true, message.output(), null));
+                        toResult(message, true, message.output(), null, null));
                 case FAILED -> resultHandler.handleResult(
-                        toResult(message, false, null, message.error()));
+                        toResult(message, false, null, message.error(), message.errorType()));
             }
         } finally {
             CorrelationId.clear();
@@ -70,14 +70,11 @@ public class ActivityResultConsumer {
         }
     }
 
-    /**
-     * Phase 4 has a single attempt per task, so the message attempt is not yet checked against
-     * the row; Phase 5 retries must verify {@code message.attempt()} before marking STARTED so
-     * a stale redelivery cannot mark a newer attempt.
-     */
+    /** Phase 7: verifies {@code message.attempt()} so a stale redelivery cannot mark a newer attempt. */
     private void handleStarted(ActivityResultMessage message) {
-        if (activityState.startActivity(message.executionId(), message.taskId())) {
-            log.debug("Activity {} of execution {} reported STARTED", message.taskId(), message.executionId());
+        if (activityState.startActivity(message.executionId(), message.taskId(), message.attempt())) {
+            log.debug("Activity {} of execution {} reported STARTED (attempt {})",
+                    message.taskId(), message.executionId(), message.attempt());
         }
     }
 
@@ -90,8 +87,10 @@ public class ActivityResultConsumer {
         }
     }
 
-    private static ActivityResult toResult(ActivityResultMessage message, boolean success, String output, String error) {
-        return new ActivityResult(message.executionId(), message.taskId(), message.attempt(), success, output, error);
+    private static ActivityResult toResult(ActivityResultMessage message, boolean success,
+                                           String output, String error, String errorType) {
+        return new ActivityResult(message.executionId(), message.taskId(), message.attempt(),
+                success, output, error, errorType);
     }
 
     private void applyCorrelation(ConsumerRecord<String, String> record) {
