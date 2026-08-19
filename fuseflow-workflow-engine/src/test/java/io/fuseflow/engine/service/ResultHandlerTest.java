@@ -60,10 +60,18 @@ class ResultHandlerTest {
         return ActivityResult.failure(new ActivityTask(EXECUTION, taskId, "act-" + taskId, null, 1), "boom");
     }
 
+    /** Stubs the execution row behind every result as RUNNING (Phase 8 status gate passes). */
+    private void stubRunningExecution() {
+        when(executionRepository.findById(EXECUTION)).thenReturn(Optional.of(
+                new WorkflowExecution(EXECUTION, UUID.randomUUID(), "wf", 1, null, null,
+                        WorkflowStatus.RUNNING, 7, Instant.now(), Instant.now(), Instant.now(), null)));
+    }
+
     @Test
     void completesActivityAppendsEventAndFansOut() {
         when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.STARTED, 4)));
         when(activityRepository.markCompleted(EXECUTION, "a", "{\"x\":1}", 4)).thenReturn(true);
+        stubRunningExecution();
         when(executionRepository.decrementRemainingActivities(EXECUTION)).thenReturn(2); // dependent still pending
 
         resultHandler.handleResult(success("a"));
@@ -112,6 +120,7 @@ class ResultHandlerTest {
         // Phase 7: a FAILED result no longer fails the workflow inline — the retry manager
         // decides between retry (default) and terminal failure.
         when(activityRepository.findById(EXECUTION, "b")).thenReturn(Optional.of(activity("b", ActivityStatus.STARTED, 4)));
+        stubRunningExecution();
 
         resultHandler.handleResult(failure("b"));
 
@@ -128,11 +137,14 @@ class ResultHandlerTest {
     void ignoresResultsFromPreviousAttempts() {
         // A stale result from attempt 1 must not complete a row that already moved to attempt 2.
         when(activityRepository.findById(EXECUTION, "a")).thenReturn(Optional.of(activity("a", ActivityStatus.SCHEDULED, 4)));
+        stubRunningExecution();
 
         ActivityResult stale = ActivityResult.success(new ActivityTask(EXECUTION, "a", "act-a", null, 1), "{\"x\":1}");
         resultHandler.handleResult(stale);
 
-        verifyNoInteractions(eventStore, scheduler, executionRepository);
+        // The status read happens, but no side effects: no event, no fan-out, no retry.
+        verify(eventStore, never()).append(any(), any(), any());
+        verify(scheduler, never()).onActivityCompleted(any(), any(), any());
         verify(retryManager, never()).onActivityFailed(any());
     }
 

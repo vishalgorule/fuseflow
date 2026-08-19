@@ -9,6 +9,7 @@ import org.springframework.core.env.PropertySource;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * SDK-internal defaults for the Kafka transport (registered via
@@ -49,6 +50,15 @@ public class FuseFlowDefaultsEnvironmentPostProcessor implements EnvironmentPost
         defaults.put("spring.kafka.consumer.key-deserializer", STRING_DESERIALIZER);
         defaults.put("spring.kafka.consumer.value-deserializer", STRING_DESERIALIZER);
         defaults.put("spring.kafka.consumer.auto-offset-reset", "earliest");
+        // Post-Phase 7 hardening: the pool listener runs inside a container-managed Kafka
+        // transaction (the COMPLETED/FAILED result and the offset commit are atomic — a worker
+        // crash mid-execution leaves the offset uncommitted, so the task is redelivered instead
+        // of stalling until the execution timeout). Spring Kafka makes transactional.id =
+        // <prefix> + n per producer, so the prefix MUST be unique per application instance — a
+        // random suffix per JVM keeps fleet workers from fencing each other; users overriding
+        // the property must keep it unique per instance too.
+        defaults.put("spring.kafka.producer.transaction-id-prefix",
+                "fuseflow-worker-" + UUID.randomUUID());
         defaults.put("fuseflow.queue.activity-results", "activity-results");
         // Pool dispatch queue prefix — the worker's queue is derived as
         // <pool-prefix>.<pool>; the engine ships the same default.

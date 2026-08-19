@@ -17,7 +17,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class WorkflowEventPublisherTest {
@@ -35,7 +34,7 @@ class WorkflowEventPublisherTest {
     void publishesLifecycleEventAfterCommit() throws Exception {
         // No transaction in a unit test → the after-commit action runs immediately.
         WorkflowEventPublisher publisher = new WorkflowEventPublisher(kafkaTemplate, objectMapper,
-                new AfterCommitDispatcher(), "workflow-events", "kafka");
+                new AfterCommitDispatcher(), "workflow-events");
         UUID executionId = UUID.randomUUID();
 
         publisher.publish(executionId, "WorkflowStarted", Map.of("workflowName", "wf"));
@@ -51,13 +50,4 @@ class WorkflowEventPublisherTest {
         assertThat(message.payload()).containsEntry("workflowName", "wf");
     }
 
-    @Test
-    void doesNothingInInMemoryMode() {
-        WorkflowEventPublisher publisher = new WorkflowEventPublisher(kafkaTemplate, objectMapper,
-                new AfterCommitDispatcher(), "workflow-events", "in-memory");
-
-        publisher.publish(UUID.randomUUID(), "WorkflowStarted", Map.of());
-
-        verifyNoInteractions(kafkaTemplate);
-    }
 }

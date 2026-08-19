@@ -2,18 +2,19 @@ package io.fuseflow.engine.dispatch;
 
 import io.fuseflow.common.correlation.CorrelationId;
 import io.fuseflow.common.messaging.ActivityTask;
+import io.fuseflow.engine.config.ReliabilityProperties;
 import io.fuseflow.engine.registry.PoolRoutingTable;
 import io.fuseflow.engine.repository.EventStore;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 
@@ -31,7 +32,10 @@ import java.util.Optional;
  * (per-task ordering) while spreading each execution's tasks across the pool topic's
  * partitions — keying by task id alone would hash the few distinct task ids onto a subset of
  * the partitions (e.g. 5 task ids over 8 partitions leaves 3 idle). The correlation-ID header
- * keeps end-to-end traceability.
+ * keeps end-to-end traceability. Each message is stamped with {@code dispatchAt} and
+ * {@code expiresAt} (= dispatch + the engine's start timeout): a worker skips a message past
+ * its expiry — the engine already timed it out and superseded it with a retry (Option A
+ * stale-task guard), so executing it would be wasted work whose result the engine drops.
  *
  * <p>Unroutable tasks (no ONLINE pool advertises the activity — interim surface before Phase 7
  * retries/timeouts) stay {@code SCHEDULED} and append an {@code ActivityUnroutable} diagnostic
@@ -39,7 +43,6 @@ import java.util.Optional;
  * unreachable the activity stays {@code SCHEDULED} and boot-time recovery re-publishes it.
  */
 @Component
-@ConditionalOnProperty(name = "fuseflow.engine.dispatch-mode", havingValue = "kafka", matchIfMissing = true)
 public class KafkaTaskDispatcher implements TaskDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaTaskDispatcher.class);
@@ -48,15 +51,18 @@ public class KafkaTaskDispatcher implements TaskDispatcher {
     private final ObjectMapper objectMapper;
     private final PoolRoutingTable routingTable;
     private final EventStore eventStore;
+    private final ReliabilityProperties properties;
 
     public KafkaTaskDispatcher(KafkaTemplate<String, String> kafkaTemplate,
                                ObjectMapper objectMapper,
                                PoolRoutingTable routingTable,
-                               EventStore eventStore) {
+                               EventStore eventStore,
+                               ReliabilityProperties properties) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.routingTable = routingTable;
         this.eventStore = eventStore;
+        this.properties = properties;
     }
 
     @Override
@@ -76,9 +82,15 @@ public class KafkaTaskDispatcher implements TaskDispatcher {
 
     private void publish(ActivityTask task, String topic) {
         try {
+            // Option A stale-task guard: stamp dispatch time + expiry (= engine start timeout) so
+            // a worker can skip a message the engine already timed out and superseded with a retry.
+            Instant now = Instant.now();
+            ActivityTask stamped = new ActivityTask(task.executionId(), task.taskId(), task.activityName(),
+                    task.input(), task.attempt(), now,
+                    now.plus(properties.getTimeout().getStart()));
             ProducerRecord<String, String> record = new ProducerRecord<>(topic,
                     task.executionId() + ":" + task.taskId(),
-                    objectMapper.writeValueAsString(task));
+                    objectMapper.writeValueAsString(stamped));
             record.headers().add(CorrelationId.HEADER,
                     CorrelationId.getOrCreate().getBytes(StandardCharsets.UTF_8));
             kafkaTemplate.send(record).whenComplete((sent, ex) -> {

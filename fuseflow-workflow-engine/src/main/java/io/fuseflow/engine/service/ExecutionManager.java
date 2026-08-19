@@ -16,6 +16,8 @@ import io.fuseflow.engine.model.WorkflowStatus;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
@@ -40,6 +42,8 @@ import java.util.stream.Collectors;
 @Service
 public class ExecutionManager {
 
+    private static final Logger log = LoggerFactory.getLogger(ExecutionManager.class);
+
     private final WorkflowDefinitionReader definitionReader;
     private final WorkflowExecutionRepository executionRepository;
     private final ActivityExecutionRepository activityRepository;
@@ -47,6 +51,7 @@ public class ExecutionManager {
     private final Scheduler scheduler;
     private final WorkflowEventPublisher workflowEventPublisher;
     private final EngineShards engineShards;
+    private final ExecutionRecovery executionRecovery;
     private final ObjectMapper objectMapper;
 
     public ExecutionManager(WorkflowDefinitionReader definitionReader,
@@ -56,6 +61,7 @@ public class ExecutionManager {
                             Scheduler scheduler,
                             WorkflowEventPublisher workflowEventPublisher,
                             EngineShards engineShards,
+                            ExecutionRecovery executionRecovery,
                             ObjectMapper objectMapper) {
         this.definitionReader = definitionReader;
         this.executionRepository = executionRepository;
@@ -64,6 +70,7 @@ public class ExecutionManager {
         this.scheduler = scheduler;
         this.workflowEventPublisher = workflowEventPublisher;
         this.engineShards = engineShards;
+        this.executionRecovery = executionRecovery;
         this.objectMapper = objectMapper;
     }
 
@@ -132,6 +139,91 @@ public class ExecutionManager {
             throw ApiException.notFound("execution_not_found", "Execution '" + id + "' does not exist");
         }
         return eventStore.history(id).stream().map(this::toEventResponse).toList();
+    }
+
+    // ---------------------------------------------------------------- lifecycle (Phase 8, FR-2)
+
+    /**
+     * Pauses a RUNNING execution: suspends <em>new</em> scheduling (roots, dependents, retries,
+     * timeouts all stop) while in-flight activities are allowed to finish. Durable: the PAUSED
+     * status survives restart, and {@link #resume} re-enables scheduling from durable state.
+     */
+    @Transactional
+    public ExecutionResponse pause(UUID id) {
+        WorkflowExecution execution = requireExecution(id);
+        if (execution.status() != WorkflowStatus.RUNNING) {
+            throw ApiException.conflict("invalid_transition",
+                    "Execution '" + id + "' is " + execution.status() + " — only RUNNING executions can be paused");
+        }
+        if (executionRepository.markPaused(id, execution.version())) {
+            eventStore.append(id, "WorkflowPaused", Map.of());
+            workflowEventPublisher.publish(id, "WorkflowPaused", Map.of());
+            log.info("Execution {} paused", id);
+        }
+        return get(id);
+    }
+
+    /**
+     * Resumes a PAUSED execution: re-enables scheduling and re-drives the execution from
+     * durable state exactly like boot recovery (stale in-flight activities are re-dispatched,
+     * runnable PENDING ones scheduled) — nothing is lost while paused.
+     */
+    @Transactional
+    public ExecutionResponse resume(UUID id) {
+        WorkflowExecution execution = requireExecution(id);
+        if (execution.status() != WorkflowStatus.PAUSED) {
+            throw ApiException.conflict("invalid_transition",
+                    "Execution '" + id + "' is " + execution.status() + " — only PAUSED executions can be resumed");
+        }
+        if (executionRepository.markResumed(id, execution.version())) {
+            eventStore.append(id, "WorkflowResumed", Map.of());
+            workflowEventPublisher.publish(id, "WorkflowResumed", Map.of());
+            log.info("Execution {} resumed — re-driving from durable state", id);
+            executionRecovery.redrive(execution);
+        }
+        return get(id);
+    }
+
+    /**
+     * Cancels a RUNNING or PAUSED execution (terminal): appends {@code WorkflowCancelled}.
+     * In-flight activities are abandoned — late worker results are ignored (the execution is
+     * terminal), so the policy is "abandon in-flight".
+     */
+    @Transactional
+    public ExecutionResponse cancel(UUID id) {
+        WorkflowExecution execution = requireExecution(id);
+        if (execution.status() != WorkflowStatus.RUNNING && execution.status() != WorkflowStatus.PAUSED) {
+            throw ApiException.conflict("invalid_transition",
+                    "Execution '" + id + "' is " + execution.status() + " — only RUNNING/PAUSED executions can be cancelled");
+        }
+        if (executionRepository.markCancelled(id, execution.version())) {
+            eventStore.append(id, "WorkflowCancelled", Map.of());
+            workflowEventPublisher.publish(id, "WorkflowCancelled", Map.of());
+            log.info("Execution {} cancelled", id);
+        }
+        return get(id);
+    }
+
+    /**
+     * Restarts a terminal execution: creates a brand-new execution (new id) from the same
+     * workflow definition and the original input. Only terminal executions can be restarted —
+     * restarting a live one would double-run it.
+     */
+    @Transactional
+    public ExecutionResponse restart(UUID id) {
+        WorkflowExecution source = requireExecution(id);
+        if (source.status() == WorkflowStatus.RUNNING || source.status() == WorkflowStatus.PAUSED) {
+            throw ApiException.conflict("invalid_transition",
+                    "Execution '" + id + "' is " + source.status()
+                            + " — only terminal executions (COMPLETED/FAILED/CANCELLED) can be restarted");
+        }
+        return start(new ExecutionRequest(source.workflowId(), parse(source.input())));
+    }
+
+    private WorkflowExecution requireExecution(UUID id) {
+        return executionRepository.findById(id)
+                .orElseThrow(() -> ApiException.notFound("execution_not_found",
+                        "Execution '" + id + "' does not exist"));
     }
 
     // ---------------------------------------------------------------- mapping

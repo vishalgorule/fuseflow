@@ -90,7 +90,9 @@ public class WorkflowScanner implements SmartInitializingSingleton {
 
         String description = workflow.description() == null || workflow.description().isBlank()
                 ? null : workflow.description();
-        WorkflowRequest request = new WorkflowRequest(workflow.name(), description,
+        // Phase 8: the annotation's version label travels in the wire request; the definition
+        // service treats (name, version) as the unique key and defaults blanks to "1".
+        WorkflowRequest request = new WorkflowRequest(workflow.name(), workflow.version(), description,
                 toPolicy(workflow.retry()), tasks);
 
         List<ApiError.FieldError> errors = dagValidator.validate(request);

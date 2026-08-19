@@ -80,13 +80,15 @@ register_shape() {
         layered)  body='[{"id":"download","activity":"downloadImage"},{"id":"resize","activity":"resizeImage","dependsOn":["download"]},{"id":"watermark","activity":"watermarkImage","dependsOn":["resize"]},{"id":"compress","activity":"compressImage","dependsOn":["watermark"]},{"id":"upload","activity":"uploadImage","dependsOn":["compress"]}]';;
     esac
 
-    # Idempotent upsert by name (Phase 1 model): reuse an existing definition with the same name.
+    # Idempotent upsert by (name, semanticVersion="1") (Phase 8 model): definitions are
+    # immutable version snapshots, so reuse the existing version-1 definition when present,
+    # else register it. A different DAG under the same version would 409-fail loud — the demo
+    # shapes are fixed per name, so reuse-by-version is correct across sessions.
     local existing
-    existing=$(curl -s "$DEF_URL/api/v1/workflows" | python3 -c "
+    existing=$(curl -s "$DEF_URL/api/v1/workflows?name=$name" | python3 -c "
 import sys, json
-target = '$name'
 for w in json.load(sys.stdin):
-    if w.get('name') == target:
+    if w.get('semanticVersion', '1') == '1':
         print(w['id']); break
 ")
     if [ -n "$existing" ]; then
@@ -94,7 +96,7 @@ for w in json.load(sys.stdin):
     else
         local created
         created=$(curl -s -X POST "$DEF_URL/api/v1/workflows" -H 'Content-Type: application/json' \
-            -d "{\"name\":\"$name\",\"description\":\"scale-$shape\",\"tasks\":$body}" \
+            -d "{\"name\":\"$name\",\"semanticVersion\":\"1\",\"description\":\"scale-$shape\",\"tasks\":$body}" \
             | python3 -c "import sys, json; print(json.load(sys.stdin).get('id',''))")
         WF_IDS+=("$created")
     fi

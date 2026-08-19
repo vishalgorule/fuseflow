@@ -8,6 +8,7 @@ import io.fuseflow.engine.dispatch.ActivityResult;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
+import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
@@ -52,6 +53,7 @@ public class RetryManager {
     private final WorkflowFinalizer workflowFinalizer;
     private final ReliabilityProperties properties;
     private final ObjectProvider<DeadLetterPublisher> deadLetterPublisher;
+    private final WorkflowEventPublisher workflowEventPublisher;
 
     public RetryManager(ActivityExecutionRepository activityRepository,
                         WorkflowExecutionRepository executionRepository,
@@ -59,7 +61,8 @@ public class RetryManager {
                         EventStore eventStore,
                         WorkflowFinalizer workflowFinalizer,
                         ReliabilityProperties properties,
-                        ObjectProvider<DeadLetterPublisher> deadLetterPublisher) {
+                        ObjectProvider<DeadLetterPublisher> deadLetterPublisher,
+                        WorkflowEventPublisher workflowEventPublisher) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.definitionReader = definitionReader;
@@ -67,6 +70,7 @@ public class RetryManager {
         this.workflowFinalizer = workflowFinalizer;
         this.properties = properties;
         this.deadLetterPublisher = deadLetterPublisher;
+        this.workflowEventPublisher = workflowEventPublisher;
     }
 
     /**
@@ -108,6 +112,14 @@ public class RetryManager {
                     "retryDueAt", dueAt.toString(),
                     "error", error,
                     "errorType", errorType));
+            // Option B: tell workers the just-failed attempt is superseded, so any queued
+            // message for it is skipped instead of executed (a worker-side control signal on
+            // the workflow-events topic — the DB attempt guard remains the source of truth).
+            workflowEventPublisher.publish(activity.workflowExecutionId(), "ActivitySuperseded", payload(
+                    "taskId", activity.taskId(),
+                    "activityName", activity.activityName(),
+                    "supersededAttempt", activity.attempt(),
+                    "newAttempt", newAttempt));
             log.info("Activity {} of execution {} failed on attempt {} — retry {} due {}",
                     activity.taskId(), activity.workflowExecutionId(), activity.attempt(),
                     newAttempt, dueAt);

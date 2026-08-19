@@ -108,16 +108,40 @@ public class ActivityExecutionRepository {
      * Activities that were handed to a dispatcher but never finished (re-dispatch on recovery).
      * Phase 7: retry-waiting rows (SCHEDULED with a future {@code retry_due_at}) are on the
      * retry clock, not the dispatch clock — recovery must not fire them early, so they are
-     * excluded until due.
+     * excluded until due. Post-Phase 7 hardening: rows with a PENDING dispatch-outbox row are
+     * excluded too — the outbox poller owns those dispatches (it publishes them when a capable
+     * pool appears); recovery only re-drives PUBLISHED-but-lost ones.
      */
     public List<ActivityExecution> findStale(UUID executionId) {
         return jdbc.sql("""
-                        SELECT %s FROM %s
-                        WHERE workflow_execution_id = :executionId AND status IN ('SCHEDULED', 'STARTED')
-                          AND (retry_due_at IS NULL OR retry_due_at <= now())
-                        """.formatted(SELECT_COLUMNS, TABLE))
+                        SELECT ae.workflow_execution_id, ae.task_id, ae.activity_name, ae.status,
+                               ae.remaining_dependencies, ae.dependents, ae.attempt, ae.output, ae.error,
+                               ae.retry_due_at, ae.error_type, ae.version, ae.created_at, ae.updated_at
+                        FROM %s ae
+                        WHERE ae.workflow_execution_id = :executionId AND ae.status IN ('SCHEDULED', 'STARTED')
+                          AND (ae.retry_due_at IS NULL OR ae.retry_due_at <= now())
+                          AND NOT EXISTS (
+                              SELECT 1 FROM engine.dispatch_outbox o
+                              WHERE o.workflow_execution_id = ae.workflow_execution_id
+                                AND o.task_id = ae.task_id AND o.attempt = ae.attempt
+                                AND o.status = 'PENDING')
+                        """.formatted(TABLE))
                 .param("executionId", executionId)
                 .query(this::mapRow)
+                .list();
+    }
+
+    /**
+     * PENDING activities whose dependencies are all satisfied, across ALL executions — the
+     * pool-rejoin sweep (post-Phase 7 hardening) re-drives these when the routing table gains a
+     * capability: they were left PENDING because no ONLINE pool could route them at schedule time.
+     */
+    public List<UUID> findExecutionsWithRunnablePending() {
+        return jdbc.sql("""
+                        SELECT DISTINCT workflow_execution_id FROM %s
+                        WHERE status = 'PENDING' AND remaining_dependencies = 0
+                        """.formatted(TABLE))
+                .query((rs, rowNum) -> rs.getObject("workflow_execution_id", UUID.class))
                 .list();
     }
 
@@ -264,12 +288,26 @@ public class ActivityExecutionRepository {
                 .list();
     }
 
-    /** SCHEDULED activities that never started within the window (start-timeout scan). */
+    /**
+     * SCHEDULED activities that never started within the window (start-timeout scan).
+     * Post-Phase 7 hardening: rows with a PENDING dispatch-outbox row are excluded (they are
+     * waiting for a pool, not timed out), and rows whose outbox dispatch was published within
+     * the window are excluded too (their start-timeout clock starts at publish — a task that
+     * waited in the outbox for a pool must not be timed out by its stale {@code updated_at}).
+     */
     public List<ActivityExecution> findStartTimeouts(Instant cutoff) {
         return jdbc.sql("""
-                        SELECT %s FROM %s
-                        WHERE status = 'SCHEDULED' AND retry_due_at IS NULL AND updated_at < :cutoff
-                        """.formatted(SELECT_COLUMNS, TABLE))
+                        SELECT ae.workflow_execution_id, ae.task_id, ae.activity_name, ae.status,
+                               ae.remaining_dependencies, ae.dependents, ae.attempt, ae.output, ae.error,
+                               ae.retry_due_at, ae.error_type, ae.version, ae.created_at, ae.updated_at
+                        FROM %s ae
+                        WHERE ae.status = 'SCHEDULED' AND ae.retry_due_at IS NULL AND ae.updated_at < :cutoff
+                          AND NOT EXISTS (
+                              SELECT 1 FROM engine.dispatch_outbox o
+                              WHERE o.workflow_execution_id = ae.workflow_execution_id
+                                AND o.task_id = ae.task_id AND o.attempt = ae.attempt
+                                AND (o.status = 'PENDING' OR o.published_at >= :cutoff))
+                        """.formatted(TABLE))
                 .param("cutoff", Timestamp.from(cutoff))
                 .query(this::mapRow)
                 .list();

@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -75,17 +76,28 @@ class AnnotationWorkflowRegistrationIntegrationTest {
         WorkflowResponse again = client.register(request);
         assertThat(again.version()).isEqualTo(created.version());
 
-        // 4. A changed DAG under the same name replaces the definition — version bumps.
+        // 4. Phase 8: a changed DAG under the SAME version is an operator error — the client
+        // fails loud (definitions are immutable snapshots; bump @Workflow.version() instead).
         WorkflowRequest changed = new WorkflowRequest("annotation-diamond", "simplified",
                 List.of(new WorkflowRequest.Task("a", "downloadImage", null)));
-        WorkflowResponse updated = client.register(changed);
-        assertThat(updated.version()).isGreaterThan(created.version());
+        assertThatThrownBy(() -> client.register(changed))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bump @Workflow.version()");
+
+        // The original version-1 snapshot is untouched.
+        mockMvc.perform(get("/api/v1/workflows").param("name", "annotation-diamond"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].tasks.length()").value(5));
+
+        // 5. Registering the changed DAG under a NEW version succeeds and the versions coexist.
+        WorkflowResponse updated = client.register(new WorkflowRequest("annotation-diamond", "2",
+                "simplified", null, List.of(new WorkflowRequest.Task("a", "downloadImage", null))));
+        assertThat(updated.semanticVersion()).isEqualTo("2");
         assertThat(updated.tasks()).hasSize(1);
-        assertThat(updated.tasks().get(0).activity()).isEqualTo("downloadImage");
 
         mockMvc.perform(get("/api/v1/workflows").param("name", "annotation-diamond"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].tasks.length()").value(1));
+                .andExpect(jsonPath("$.length()").value(2));
     }
 
     // ---------------------------------------------------------------- helpers

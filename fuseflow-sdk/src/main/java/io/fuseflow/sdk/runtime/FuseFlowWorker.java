@@ -86,6 +86,16 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
 
     /** Executes a dispatched activity and publishes STARTED + terminal results. */
     public void execute(ActivityTask task) {
+        execute(task, null);
+    }
+
+    /**
+     * Executes a dispatched activity and publishes STARTED + terminal results.
+     * The {@code onComplete} callback runs after the terminal result is published — used by
+     * the dedup cache to mark the {@code (executionId, taskId, attempt)} as processed so
+     * duplicate dispatches are skipped.
+     */
+    public void execute(ActivityTask task, Runnable onComplete) {
         ActivityContext context = new ActivityContext(task.executionId(), task.taskId(),
                 task.activityName(), task.attempt(), task.input());
         resultPublisher.publish(ActivityResultMessage.started(task));
@@ -98,6 +108,10 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
             // Phase 7: send the exception class name so the engine can classify the failure as
             // non-retryable per the retry policy's nonRetryableExceptions.
             resultPublisher.publish(ActivityResultMessage.failed(task, ex.getClass().getName(), ex.getMessage()));
+        } finally {
+            if (onComplete != null) {
+                onComplete.run();
+            }
         }
     }
 

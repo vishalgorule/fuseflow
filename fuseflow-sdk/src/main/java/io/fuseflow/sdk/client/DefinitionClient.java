@@ -21,11 +21,12 @@ import java.util.stream.Collectors;
  * registration of annotation-defined workflows. The API contract (DTOs) is shared via
  * {@code fuseflow-common}.
  *
- * <p>Registration is an <b>upsert by name</b>, matching the definition service's unique-name
- * model: POST; on a name conflict (409), look the workflow up by name and either do nothing
- * (identical DAG) or PUT-replace it (different DAG). Multi-instance deployments therefore
- * re-register without conflicts, and a changed {@code @Workflow} is picked up on the next
- * deploy.
+ * <p>Registration is an <b>upsert by (name, semanticVersion)</b> (Phase 8): definitions are
+ * immutable version snapshots, so POST; on a name+version conflict (409), look the exact
+ * version up and either do nothing (identical DAG) or <b>fail loud</b> (different DAG on the
+ * same version — the operator must bump {@code @Workflow.version()} in the annotation). The
+ * pre-Phase 8 replace-by-PUT path is gone: a changed DAG is a <em>new version</em>, never a
+ * mutation of a snapshot that executions may already pin.
  */
 public class DefinitionClient {
 
@@ -38,9 +39,10 @@ public class DefinitionClient {
     }
 
     /**
-     * Registers (or re-registers) a workflow definition, idempotently by name. Returns the
-     * resulting definition. A {@code 409} name conflict triggers a name lookup followed by
-     * a no-op (same DAG) or a PUT (different DAG).
+     * Registers (or re-registers) a workflow definition, idempotently by (name, version).
+     * Returns the resulting definition. A {@code 409} name+version conflict triggers a
+     * version lookup followed by a no-op (same DAG) or a loud failure (different DAG — bump
+     * the version in the annotation).
      */
     public WorkflowResponse register(WorkflowRequest request) {
         try {
@@ -49,15 +51,15 @@ public class DefinitionClient {
                     .body(request)
                     .retrieve()
                     .body(WorkflowResponse.class);
-            log.info("Registered workflow '{}' ({}) with {} task(s)",
-                    request.name(), created == null ? "?" : created.id(), request.tasks().size());
+            log.info("Registered workflow '{}' version '{}' ({}) with {} task(s)",
+                    request.name(), versionOf(request), created == null ? "?" : created.id(), request.tasks().size());
             return created;
         } catch (HttpClientErrorException.Conflict ex) {
             return resolveConflict(request);
         }
     }
 
-    /** Lookup by unique name; empty when the definition does not exist. */
+    /** All versions of a workflow name, newest first; empty when none exist. */
     public List<WorkflowResponse> findByName(String name) {
         return restClient.get()
                 .uri(uriBuilder -> uriBuilder.path("/api/v1/workflows")
@@ -68,34 +70,65 @@ public class DefinitionClient {
                 });
     }
 
+    /** The exact {@code (name, version)} snapshot; empty when that version does not exist. */
+    public List<WorkflowResponse> findByNameAndVersion(String name, String version) {
+        return restClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/api/v1/workflows")
+                        .queryParam("name", name)
+                        .queryParam("version", version)
+                        .build())
+                .retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+    }
+
     // ---------------------------------------------------------------- internals
 
     private WorkflowResponse resolveConflict(WorkflowRequest request) {
-        WorkflowResponse existing = findByName(request.name()).stream().findFirst().orElse(null);
+        String version = versionOf(request);
+        WorkflowResponse existing = findByNameAndVersion(request.name(), version).stream().findFirst().orElse(null);
         if (existing != null && sameDag(request, existing)) {
-            log.info("Workflow '{}' already registered with an identical DAG — no-op", request.name());
+            log.info("Workflow '{}' version '{}' already registered with an identical DAG — no-op",
+                    request.name(), version);
             return existing;
         }
         if (existing == null) {
-            // Name conflict raced with a delete; just retry the create once.
-            log.warn("Workflow '{}' conflicted but no definition found by name — retrying create", request.name());
+            // Name+version conflict raced with a delete; just retry the create once.
+            log.warn("Workflow '{}' version '{}' conflicted but no definition found — retrying create",
+                    request.name(), version);
             return restClient.post()
                     .uri("/api/v1/workflows")
                     .body(request)
                     .retrieve()
                     .body(WorkflowResponse.class);
         }
-        log.info("Workflow '{}' changed — replacing definition {}", request.name(), existing.id());
-        return restClient.put()
-                .uri("/api/v1/workflows/{id}", existing.id())
-                .body(request)
-                .retrieve()
-                .body(WorkflowResponse.class);
+        // Phase 8: a different DAG on the same version is an operator error, not something the
+        // SDK can paper over — definitions are immutable snapshots and executions may already
+        // pin this version. The fix is to bump @Workflow.version() and re-deploy.
+        throw new IllegalStateException("Workflow '" + request.name() + "' version '" + version
+                + "' already exists with a different DAG. Definitions are immutable version "
+                + "snapshots (Phase 8) — bump @Workflow.version() to \"" + nextVersion(version)
+                + "\" (or higher) in the annotation and redeploy to register the changed DAG.");
+    }
+
+    private static String versionOf(WorkflowRequest request) {
+        return request.semanticVersion() == null || request.semanticVersion().isBlank()
+                ? "1" : request.semanticVersion();
+    }
+
+    /** A cheap suggestion for the next version label (vN → vN+1); operators can use any label. */
+    private static String nextVersion(String version) {
+        String trimmed = version.trim();
+        if (trimmed.matches("v?\\d+")) {
+            int base = Integer.parseInt(trimmed.replaceAll("[^0-9]", ""));
+            return (trimmed.startsWith("v") ? "v" : "") + (base + 1);
+        }
+        return version + ".1";
     }
 
     /**
      * Structural comparison (ids/activities/dependency edges + retry policies; description is
-     * ignored). A changed retry policy must trigger a replacement, so policies are compared too.
+     * ignored). A changed retry policy must trigger a loud failure, so policies are compared too.
      */
     private boolean sameDag(WorkflowRequest request, WorkflowResponse existing) {
         if (request.tasks() == null || existing.tasks() == null) {

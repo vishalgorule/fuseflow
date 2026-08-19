@@ -98,7 +98,7 @@ public class FuseFlowWorkflowProcessor extends AbstractProcessor {
         List<WorkflowRequest.Task> tasks = steps.length > 0
                 ? tasksFromSteps(steps)
                 : tasksFromActivityMethods(workflowClass);
-        WorkflowRequest request = new WorkflowRequest(name,
+        WorkflowRequest request = new WorkflowRequest(name, workflow.version(),
                 workflow.description() == null || workflow.description().isBlank() ? null : workflow.description(),
                 toPolicy(workflow.retry()), tasks);
 

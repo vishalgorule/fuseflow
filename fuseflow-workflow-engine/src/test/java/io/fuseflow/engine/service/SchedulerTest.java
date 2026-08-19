@@ -1,13 +1,12 @@
 package io.fuseflow.engine.service;
 
-import io.fuseflow.engine.dispatch.AfterCommitDispatcher;
-import io.fuseflow.common.messaging.ActivityTask;
-import io.fuseflow.engine.dispatch.TaskDispatcher;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
+import io.fuseflow.engine.registry.PoolRoutingTable;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
+import io.fuseflow.engine.repository.DispatchOutboxRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,6 +20,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -35,10 +35,11 @@ class SchedulerTest {
     private final ActivityExecutionRepository activityRepository = mock(ActivityExecutionRepository.class);
     private final WorkflowExecutionRepository executionRepository = mock(WorkflowExecutionRepository.class);
     private final EventStore eventStore = mock(EventStore.class);
-    private final AfterCommitDispatcher afterCommitDispatcher = mock(AfterCommitDispatcher.class);
-    private final TaskDispatcher taskDispatcher = mock(TaskDispatcher.class);
+    private final PoolRoutingTable routingTable = mock(PoolRoutingTable.class);
+    private final DispatchOutboxRepository outboxRepository = mock(DispatchOutboxRepository.class);
+
     private final Scheduler scheduler = new Scheduler(activityRepository, executionRepository, eventStore,
-            afterCommitDispatcher, taskDispatcher);
+            routingTable, outboxRepository);
 
     @BeforeEach
     void setUp() {
@@ -47,24 +48,26 @@ class SchedulerTest {
                         WorkflowStatus.RUNNING, 0, Instant.now(), Instant.now(), Instant.now(), null)));
     }
 
-    private static ActivityExecution pending(String taskId, int remaining, List<String> dependents, long version) {
+    private static ActivityExecution pending(String taskId, int remaining, List<String> dependents, int attempt, long version) {
         Instant now = Instant.now();
         return new ActivityExecution(EXECUTION, taskId, "act-" + taskId, ActivityStatus.PENDING,
-                remaining, dependents, 1, null, null, version, now, now);
+                remaining, dependents, attempt, null, null, version, now, now);
+    }
+
+    private static ActivityExecution pending(String taskId, int remaining, List<String> dependents, long version) {
+        return pending(taskId, remaining, dependents, 1, version);
     }
 
     @Test
-    void schedulesRunnableActivityAppendsEventAndDispatchesAfterCommit() {
-        ActivityExecution root = pending("a", 0, List.of("b"), 3);
+    void schedulesRunnableActivityAndWritesOutboxRow() {
+        ActivityExecution root = pending("a", 0, List.of("b"), 3, 3);
+        when(routingTable.resolveTopic("act-a", "a")).thenReturn(Optional.of("fuseflow-pool.io"));
         when(activityRepository.markScheduled(EXECUTION, "a", 3)).thenReturn(true);
 
         scheduler.schedule(EXECUTION, List.of(root), "{\"k\":1}");
 
         verify(eventStore).append(eq(EXECUTION), eq("ActivityScheduled"), any());
-        ArgumentCaptor<Runnable> action = ArgumentCaptor.forClass(Runnable.class);
-        verify(afterCommitDispatcher).runAfterCommit(action.capture());
-        action.getValue().run();
-        verify(taskDispatcher).dispatch(any(ActivityTask.class));
+        verify(outboxRepository).insert(eq(EXECUTION), eq("a"), eq("act-a"), eq("{\"k\":1}"), eq(3));
     }
 
     @Test
@@ -75,15 +78,14 @@ class SchedulerTest {
         scheduler.schedule(EXECUTION, List.of(stale), "{\"k\":1}");
 
         verify(eventStore, never()).append(eq(EXECUTION), eq("ActivityScheduled"), any());
-        verify(afterCommitDispatcher, never()).runAfterCommit(any());
-        verify(taskDispatcher, never()).dispatch(any());
+        verify(outboxRepository, never()).insert(any(), any(), any(), any(), anyInt());
     }
 
     @Test
     void doesNothingForEmptyActivityList() {
         scheduler.schedule(EXECUTION, List.of(), "{\"k\":1}");
         verify(executionRepository, never()).findById(any());
-        verify(afterCommitDispatcher, never()).runAfterCommit(any());
+        verify(outboxRepository, never()).insert(any(), any(), any(), any(), anyInt());
     }
 
     @Test
@@ -92,6 +94,7 @@ class SchedulerTest {
         // (counter 0) in one round trip — no follow-up SELECT — and b becomes runnable.
         when(activityRepository.decrement(EXECUTION, "b"))
                 .thenReturn(Optional.of(pending("b", 0, List.of("c"), 5)));
+        when(routingTable.resolveTopic("act-b", "b")).thenReturn(Optional.of("fuseflow-pool.io"));
         when(activityRepository.markScheduled(EXECUTION, "b", 5)).thenReturn(true);
 
         scheduler.onActivityCompleted(EXECUTION, "a", List.of("b"));
@@ -112,7 +115,7 @@ class SchedulerTest {
 
         verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("e"), anyLong());
         verify(executionRepository, never()).findById(any());
-        verify(taskDispatcher, never()).dispatch(any());
+        verify(outboxRepository, never()).insert(any(), any(), any(), any(), anyInt());
     }
 
     @Test
@@ -125,5 +128,36 @@ class SchedulerTest {
         verify(activityRepository, never()).findById(eq(EXECUTION), eq("e"));
         verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("e"), anyLong());
         verify(executionRepository, never()).findById(any());
+    }
+
+    @Test
+    void leavesUnroutableTaskPendingWithEvent() {
+        // No ONLINE pool advertises the activity → the task must NOT be scheduled (no retry
+        // clock, no attempts burned) — it waits PENDING for the pool-rejoin sweep.
+        ActivityExecution root = pending("a", 0, List.of(), 1);
+        when(routingTable.resolveTopic("act-a", "a")).thenReturn(Optional.empty());
+
+        scheduler.schedule(EXECUTION, List.of(root), "{\"k\":1}");
+
+        verify(eventStore).append(eq(EXECUTION), eq("ActivityUnroutable"), any());
+        verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("a"), anyLong());
+        verify(outboxRepository, never()).insert(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void checksRoutingOnlyForSchedulableTasks() {
+        // Two runnable tasks: 'a' routable (scheduled), 'b' not (stays PENDING) — independent.
+        ActivityExecution a = pending("a", 0, List.of(), 1);
+        ActivityExecution b = pending("b", 0, List.of(), 1);
+        when(routingTable.resolveTopic("act-a", "a")).thenReturn(Optional.of("fuseflow-pool.io"));
+        when(routingTable.resolveTopic("act-b", "b")).thenReturn(Optional.empty());
+        when(activityRepository.markScheduled(EXECUTION, "a", 1)).thenReturn(true);
+
+        scheduler.schedule(EXECUTION, List.of(a, b), "{\"k\":1}");
+
+        verify(activityRepository).markScheduled(EXECUTION, "a", 1);
+        verify(activityRepository, never()).markScheduled(eq(EXECUTION), eq("b"), anyLong());
+        verify(outboxRepository).insert(eq(EXECUTION), eq("a"), eq("act-a"), eq("{\"k\":1}"), eq(1));
+        verify(eventStore).append(eq(EXECUTION), eq("ActivityUnroutable"), any());
     }
 }

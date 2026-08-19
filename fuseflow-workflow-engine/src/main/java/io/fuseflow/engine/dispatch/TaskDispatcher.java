@@ -3,9 +3,9 @@ package io.fuseflow.engine.dispatch;
 import io.fuseflow.common.messaging.ActivityTask;
 
 /**
- * SPI (Phase 2, plan §4 task 4): hands an {@link ActivityTask} to whatever executes activities.
- * The in-memory implementation ships in Phase 2; a Kafka-backed implementation replaces it in
- * Phase 4 without touching the scheduler.
+ * SPI (Phase 2): hands an {@link ActivityTask} to whatever executes activities.
+ * The sole implementation is {@link KafkaTaskDispatcher}, which routes tasks to worker pools
+ * via Kafka topics.
  */
 public interface TaskDispatcher {
 

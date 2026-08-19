@@ -138,14 +138,16 @@ public class WorkflowExecutionRepository {
     }
 
     /**
-     * Terminal success transition (RUNNING → COMPLETED). Optimistic lock: returns {@code false}
-     * when the row's version no longer matches (a concurrent transition already won).
+     * Terminal success transition (RUNNING|PAUSED → COMPLETED). Phase 8: a paused execution
+     * whose in-flight activities all drain completes while paused ("in-flight allowed to
+     * finish"). Optimistic lock: returns {@code false} when the row's version no longer
+     * matches (a concurrent transition already won).
      */
     public boolean markCompleted(UUID id, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
                         SET status = 'COMPLETED', version = version + 1, updated_at = :updatedAt, completed_at = :completedAt
-                        WHERE id = :id AND status = 'RUNNING' AND version = :expectedVersion
+                        WHERE id = :id AND status IN ('RUNNING', 'PAUSED') AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("id", id)
                 .param("updatedAt", Timestamp.from(Instant.now()))
@@ -154,12 +156,57 @@ public class WorkflowExecutionRepository {
                 .update() == 1;
     }
 
-    /** Terminal failure transition (RUNNING → FAILED); optimistic lock as above. */
+    /**
+     * Terminal failure transition (RUNNING|PAUSED → FAILED); optimistic lock as above.
+     * Phase 8: an in-flight failure drains even while paused (consistent with completion).
+     */
     public boolean markFailed(UUID id, long expectedVersion) {
         return jdbc.sql("""
                         UPDATE %s
                         SET status = 'FAILED', version = version + 1, updated_at = :updatedAt, completed_at = :completedAt
+                        WHERE id = :id AND status IN ('RUNNING', 'PAUSED') AND version = :expectedVersion
+                        """.formatted(TABLE))
+                .param("id", id)
+                .param("updatedAt", Timestamp.from(Instant.now()))
+                .param("completedAt", Timestamp.from(Instant.now()))
+                .param("expectedVersion", expectedVersion)
+                .update() == 1;
+    }
+
+    // ---------------------------------------------------------------- lifecycle (Phase 8)
+
+    /** Non-terminal suspend (RUNNING → PAUSED); optimistic lock as above. */
+    public boolean markPaused(UUID id, long expectedVersion) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET status = 'PAUSED', version = version + 1, updated_at = :updatedAt
                         WHERE id = :id AND status = 'RUNNING' AND version = :expectedVersion
+                        """.formatted(TABLE))
+                .param("id", id)
+                .param("updatedAt", Timestamp.from(Instant.now()))
+                .param("expectedVersion", expectedVersion)
+                .update() == 1;
+    }
+
+    /** Non-terminal resume (PAUSED → RUNNING); optimistic lock as above. */
+    public boolean markResumed(UUID id, long expectedVersion) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET status = 'RUNNING', version = version + 1, updated_at = :updatedAt
+                        WHERE id = :id AND status = 'PAUSED' AND version = :expectedVersion
+                        """.formatted(TABLE))
+                .param("id", id)
+                .param("updatedAt", Timestamp.from(Instant.now()))
+                .param("expectedVersion", expectedVersion)
+                .update() == 1;
+    }
+
+    /** Terminal abort (RUNNING|PAUSED → CANCELLED); optimistic lock as above. */
+    public boolean markCancelled(UUID id, long expectedVersion) {
+        return jdbc.sql("""
+                        UPDATE %s
+                        SET status = 'CANCELLED', version = version + 1, updated_at = :updatedAt, completed_at = :completedAt
+                        WHERE id = :id AND status IN ('RUNNING', 'PAUSED') AND version = :expectedVersion
                         """.formatted(TABLE))
                 .param("id", id)
                 .param("updatedAt", Timestamp.from(Instant.now()))

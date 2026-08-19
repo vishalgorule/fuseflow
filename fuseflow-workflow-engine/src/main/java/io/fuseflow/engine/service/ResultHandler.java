@@ -3,6 +3,8 @@ package io.fuseflow.engine.service;
 import io.fuseflow.engine.dispatch.ActivityResult;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
+import io.fuseflow.engine.model.WorkflowExecution;
+import io.fuseflow.engine.model.WorkflowStatus;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
@@ -70,6 +72,18 @@ public class ResultHandler {
             // retry attempt) — ignore.
             log.debug("Ignoring stale result for task {} of execution {} (attempt {})",
                     result.taskId(), result.executionId(), result.attempt());
+            return;
+        }
+
+        // Phase 8: a cancelled (terminal) execution abandons in-flight activities — late
+        // worker results must not complete them or move the execution. Paused executions keep
+        // processing results (in-flight allowed to finish); only scheduling is suspended.
+        WorkflowExecution execution = executionRepository.findById(result.executionId()).orElse(null);
+        if (execution == null || execution.status() == WorkflowStatus.CANCELLED
+                || execution.status() == WorkflowStatus.COMPLETED
+                || execution.status() == WorkflowStatus.FAILED) {
+            log.debug("Ignoring result for task {} of terminal execution {} ({})",
+                    result.taskId(), result.executionId(), execution == null ? "?" : execution.status());
             return;
         }
 

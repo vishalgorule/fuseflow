@@ -30,11 +30,17 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Register, update, delete and retrieve workflow definitions. Every create/update
- * runs {@link DagValidator}; invalid DAGs are rejected with field-level errors.
+ * Register, list and retrieve workflow definitions. Every create runs {@link DagValidator};
+ * invalid DAGs are rejected with field-level errors.
+ *
+ * <p>Phase 8: definitions are <b>immutable version snapshots</b> — {@code (name, semanticVersion)}
+ * is the unique key, and changing a DAG means registering a new version. {@code PUT} on an
+ * existing snapshot is rejected (409); the SDK bumps {@code @Workflow.version()} instead.
  */
 @Service
 public class WorkflowDefinitionService {
+
+    private static final String DEFAULT_VERSION = "1";
 
     private final WorkflowDefinitionRepository definitionRepository;
     private final WorkflowTaskRepository taskRepository;
@@ -56,36 +62,33 @@ public class WorkflowDefinitionService {
         validate(request);
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
-        WorkflowDefinition definition = new WorkflowDefinition(id, request.name(), request.description(),
-                toJson(request.retryPolicy()), 0, now, now);
+        String semanticVersion = normalizedVersion(request.semanticVersion());
+        WorkflowDefinition definition = new WorkflowDefinition(id, request.name(), semanticVersion,
+                request.description(), toJson(request.retryPolicy()), 0, now, now);
         try {
             definitionRepository.insert(definition);
         } catch (DuplicateKeyException ex) {
-            // Unique name violated (possibly raced with a concurrent create).
+            // Unique (name, semantic_version) violated (possibly raced with a concurrent create).
             throw ApiException.conflict("workflow_name_conflict",
-                    "A workflow named '" + request.name() + "' already exists");
+                    "A workflow named '" + request.name() + "' with version '" + semanticVersion
+                            + "' already exists — register a new version instead");
         }
         taskRepository.replaceAll(id, toTasks(id, request.tasks()), toDependencies(id, request.tasks()));
         return get(id);
     }
 
+    /**
+     * Phase 8: versions are immutable snapshots — a {@code (name, version)} row is fixed once
+     * created. Changing the DAG means registering a new version; {@code PUT} on an existing
+     * snapshot is always rejected so callers cannot silently mutate a version in flight.
+     */
     @Transactional
     public WorkflowResponse update(UUID id, WorkflowRequest request) {
-        validate(request);
         WorkflowDefinition existing = definitionRepository.findById(id)
                 .orElseThrow(() -> ApiException.notFound("workflow_not_found", "Workflow '" + id + "' does not exist"));
-        if (definitionRepository.existsByNameExcluding(request.name(), id)) {
-            throw ApiException.conflict("workflow_name_conflict",
-                    "A workflow named '" + request.name() + "' already exists");
-        }
-
-        if (!definitionRepository.update(id, request.name(), request.description(),
-                toJson(request.retryPolicy()), existing.version())) {
-            throw ApiException.conflict("workflow_version_conflict",
-                    "Workflow '" + id + "' was modified concurrently; retry");
-        }
-        taskRepository.replaceAll(id, toTasks(id, request.tasks()), toDependencies(id, request.tasks()));
-        return get(id);
+        throw ApiException.conflict("workflow_version_immutable",
+                "Workflow '" + existing.name() + "' version '" + existing.semanticVersion()
+                        + "' is an immutable snapshot — register a new version (POST) to change its DAG");
     }
 
     @Transactional
@@ -118,13 +121,18 @@ public class WorkflowDefinitionService {
         return toResponse(definition, taskRepository.findTasks(id), taskRepository.findDependencies(id));
     }
 
-    /**
-     * Lookup by unique name (Phase 6): enables the SDK's idempotent registration (same DAG →
-     * no-op, different DAG → replace). Phase 8 extends this with {@code version} for
-     * multi-versioned lookups.
-     */
-    public Optional<WorkflowResponse> findByName(String name) {
-        return definitionRepository.findByName(name)
+    /** All versions of a workflow name (Phase 8), newest first. */
+    public List<WorkflowResponse> findByName(String name) {
+        return definitionRepository.findAllByName(name).stream()
+                .map(definition -> toResponse(definition,
+                        taskRepository.findTasks(definition.id()),
+                        taskRepository.findDependencies(definition.id())))
+                .toList();
+    }
+
+    /** The exact {@code (name, semanticVersion)} snapshot (Phase 8). */
+    public Optional<WorkflowResponse> findByNameAndVersion(String name, String semanticVersion) {
+        return definitionRepository.findByNameAndVersion(name, normalizedVersion(semanticVersion))
                 .map(definition -> toResponse(definition,
                         taskRepository.findTasks(definition.id()),
                         taskRepository.findDependencies(definition.id())));
@@ -137,6 +145,11 @@ public class WorkflowDefinitionService {
         if (!errors.isEmpty()) {
             throw ApiException.badRequest("invalid_workflow", "Workflow definition is invalid", errors);
         }
+    }
+
+    /** {@code null}/{@code blank} → "1" so pre-Phase 8 callers keep working unchanged. */
+    private static String normalizedVersion(String semanticVersion) {
+        return (semanticVersion == null || semanticVersion.isBlank()) ? DEFAULT_VERSION : semanticVersion.trim();
     }
 
     private List<WorkflowTask> toTasks(UUID workflowId, List<WorkflowRequest.Task> tasks) {
@@ -171,8 +184,8 @@ public class WorkflowDefinitionService {
                         depsByTask.getOrDefault(task.taskId(), List.of()),
                         parsePolicy(task.retryPolicyJson())))
                 .toList();
-        return new WorkflowResponse(definition.id(), definition.name(), definition.description(),
-                parsePolicy(definition.retryPolicyJson()),
+        return new WorkflowResponse(definition.id(), definition.name(), definition.semanticVersion(),
+                definition.description(), parsePolicy(definition.retryPolicyJson()),
                 responseTasks, definition.version(), definition.createdAt(), definition.updatedAt());
     }
 

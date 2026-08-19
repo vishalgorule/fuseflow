@@ -21,12 +21,11 @@ import java.util.UUID;
 /**
  * Boot-time recovery (architecture §6.5): scans for RUNNING executions and re-drives their
  * pending work from durable state — activities left SCHEDULED/STARTED are re-dispatched, and
- * PENDING activities whose dependencies are already satisfied are scheduled afterwards. In the
- * in-memory mode the engine is the only executor, so re-dispatch is a pure retry; in the Kafka
- * mode the task may still be genuinely in-flight on a worker, and re-publishing is safe only
- * because results are idempotent by {@code (executionId, taskId, attempt)}. The stale
- * re-dispatch runs first deliberately: {@link Scheduler#schedule} commits PENDING → SCHEDULED,
- * so a scan in the other order would re-find (and double-dispatch) the freshly scheduled tasks.
+ * PENDING activities whose dependencies are already satisfied are scheduled afterwards. The
+ * task may still be genuinely in-flight on a worker, and re-publishing is safe only because
+ * results are idempotent by {@code (executionId, taskId, attempt)}. The stale re-dispatch
+ * runs first deliberately: {@link Scheduler#schedule} commits PENDING → SCHEDULED, so a scan
+ * in the other order would re-find (and double-dispatch) the freshly scheduled tasks.
  * No work is lost or duplicated: the version-guarded transitions make re-dispatch idempotent.
  */
 @Component
@@ -68,11 +67,17 @@ public class ExecutionRecovery implements ApplicationRunner {
         log.info("Recovering {} RUNNING execution(s) (shards {} of {})", running.size(),
                 engineShards.ownedShards(), engineShards.shardCount());
         for (WorkflowExecution execution : running) {
-            recover(execution);
+            redrive(execution);
         }
     }
 
-    private void recover(WorkflowExecution execution) {
+    /**
+     * Re-drives one execution from durable state: re-dispatches stale in-flight activities and
+     * schedules runnable PENDING ones. Used by boot-time recovery and by Phase 8
+     * {@code resume} (a paused execution re-enables scheduling from durable state the same
+     * way). Idempotent — every transition is version-guarded.
+     */
+    public void redrive(WorkflowExecution execution) {
         UUID executionId = execution.id();
 
         // Re-handle activities that were dispatched but never finished. Runs FIRST: the scan

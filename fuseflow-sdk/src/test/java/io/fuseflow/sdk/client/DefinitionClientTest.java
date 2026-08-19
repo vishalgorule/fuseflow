@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DefinitionClientTest {
 
@@ -20,7 +21,7 @@ class DefinitionClientTest {
                     new WorkflowRequest.Task("upload", "uploadImage", List.of("resize"))));
 
     private static final String EXISTING_RESPONSE = """
-            {"id":"11111111-1111-1111-1111-111111111111","name":"image-processing","description":"old",
+            {"id":"11111111-1111-1111-1111-111111111111","name":"image-processing","semanticVersion":"1","description":"old",
              "tasks":[{"id":"download","activity":"downloadImage","dependsOn":[]},
                       {"id":"resize","activity":"resizeImage","dependsOn":["download"]},
                       {"id":"upload","activity":"uploadImage","dependsOn":["resize"]}],
@@ -82,8 +83,10 @@ class DefinitionClientTest {
     }
 
     @Test
-    void changedDagReplacesExistingDefinitionOnNameConflict() throws Exception {
-        // The persisted definition differs (resize depends on ghost) → the client PUTs.
+    void changedDagOnSameVersionFailsLoud() throws Exception {
+        // Phase 8: the persisted definition differs (resize depends on ghost) → the client
+        // must NOT PUT (snapshots are immutable); it fails loud telling the operator to bump
+        // the version in the annotation.
         String changedExisting = EXISTING_RESPONSE.replace("\"dependsOn\":[\"resize\"]",
                 "\"dependsOn\":[\"ghost\"]");
         HttpServer server = startServer(exchange -> {
@@ -92,27 +95,27 @@ class DefinitionClientTest {
                 respond(exchange, 409, "{}");
             } else if ("GET".equals(exchange.getRequestMethod())) {
                 respond(exchange, 200, "[" + changedExisting + "]");
-            } else if ("PUT".equals(exchange.getRequestMethod())) {
-                respond(exchange, 200, UPDATED_RESPONSE);
             }
         });
         try {
             DefinitionClient client = clientFor(server);
-            var response = client.register(DIAMOND);
-            assertThat(response.version()).isEqualTo(3);
-            assertThat(requests).contains(
+            assertThatThrownBy(() -> client.register(DIAMOND))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("bump @Workflow.version()");
+            // Version-pinned lookup, no PUT.
+            assertThat(requests).containsExactly(
                     "POST /api/v1/workflows",
-                    "GET /api/v1/workflows",
-                    "PUT /api/v1/workflows/11111111-1111-1111-1111-111111111111");
+                    "GET /api/v1/workflows");
         } finally {
             server.stop(0);
         }
     }
 
     @Test
-    void changedRetryPolicyReplacesExistingDefinitionOnNameConflict() throws Exception {
-        // Phase 7: the DAG is identical but the existing definition carries no retry policy
-        // while the request does → the client must PUT (a policy change is a real change).
+    void changedRetryPolicyOnSameVersionFailsLoud() throws Exception {
+        // Phase 7/8: the DAG is identical but the existing definition carries no retry policy
+        // while the request does → a real change, so the same (name, version) is immutable and
+        // the client fails loud (bump the version).
         WorkflowRequest withPolicy = new WorkflowRequest("image-processing", "desc",
                 new io.fuseflow.common.dto.RetryPolicy(3, 5, true, 2.0, null),
                 List.of(
@@ -125,18 +128,13 @@ class DefinitionClientTest {
                 respond(exchange, 409, "{}");
             } else if ("GET".equals(exchange.getRequestMethod())) {
                 respond(exchange, 200, "[" + EXISTING_RESPONSE + "]");
-            } else if ("PUT".equals(exchange.getRequestMethod())) {
-                respond(exchange, 200, UPDATED_RESPONSE);
             }
         });
         try {
             DefinitionClient client = clientFor(server);
-            var response = client.register(withPolicy);
-            assertThat(response.version()).isEqualTo(3);
-            assertThat(requests).contains(
-                    "POST /api/v1/workflows",
-                    "GET /api/v1/workflows",
-                    "PUT /api/v1/workflows/11111111-1111-1111-1111-111111111111");
+            assertThatThrownBy(() -> client.register(withPolicy))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("bump @Workflow.version()");
         } finally {
             server.stop(0);
         }

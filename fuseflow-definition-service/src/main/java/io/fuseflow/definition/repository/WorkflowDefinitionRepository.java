@@ -18,6 +18,9 @@ public class WorkflowDefinitionRepository {
 
     private static final String TABLE = "definition.workflow_definition";
 
+    private static final String COLUMNS =
+            "id, name, semantic_version, description, retry_policy, version, created_at, updated_at";
+
     private final JdbcClient jdbc;
 
     public WorkflowDefinitionRepository(JdbcClient jdbc) {
@@ -26,11 +29,12 @@ public class WorkflowDefinitionRepository {
 
     public void insert(WorkflowDefinition definition) {
         jdbc.sql("""
-                        INSERT INTO %s (id, name, description, retry_policy, version, created_at, updated_at)
-                        VALUES (:id, :name, :description, CAST(:retryPolicy AS jsonb), :version, :createdAt, :updatedAt)
+                        INSERT INTO %s (id, name, semantic_version, description, retry_policy, version, created_at, updated_at)
+                        VALUES (:id, :name, :semanticVersion, :description, CAST(:retryPolicy AS jsonb), :version, :createdAt, :updatedAt)
                         """.formatted(TABLE))
                 .param("id", definition.id())
                 .param("name", definition.name())
+                .param("semanticVersion", definition.semanticVersion())
                 .param("description", definition.description())
                 .param("retryPolicy", definition.retryPolicyJson())
                 .param("version", definition.version())
@@ -41,51 +45,40 @@ public class WorkflowDefinitionRepository {
 
     public Optional<WorkflowDefinition> findById(UUID id) {
         return jdbc.sql("""
-                        SELECT id, name, description, retry_policy, version, created_at, updated_at
-                        FROM %s WHERE id = :id
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE id = :id
+                        """.formatted(COLUMNS, TABLE))
                 .param("id", id)
                 .query(this::mapRow)
                 .optional();
     }
 
-    public Optional<WorkflowDefinition> findByName(String name) {
+    /** All versions of a workflow name, newest first (Phase 8). */
+    public List<WorkflowDefinition> findAllByName(String name) {
         return jdbc.sql("""
-                        SELECT id, name, description, retry_policy, version, created_at, updated_at
-                        FROM %s WHERE name = :name
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s WHERE name = :name ORDER BY semantic_version DESC, created_at DESC
+                        """.formatted(COLUMNS, TABLE))
                 .param("name", name)
+                .query(this::mapRow)
+                .list();
+    }
+
+    /** The exact (name, semanticVersion) snapshot; empty when that version does not exist. */
+    public Optional<WorkflowDefinition> findByNameAndVersion(String name, String semanticVersion) {
+        return jdbc.sql("""
+                        SELECT %s FROM %s WHERE name = :name AND semantic_version = :semanticVersion
+                        """.formatted(COLUMNS, TABLE))
+                .param("name", name)
+                .param("semanticVersion", semanticVersion)
                 .query(this::mapRow)
                 .optional();
     }
 
     public List<WorkflowDefinition> findAll() {
         return jdbc.sql("""
-                        SELECT id, name, description, retry_policy, version, created_at, updated_at
-                        FROM %s ORDER BY created_at DESC, id
-                        """.formatted(TABLE))
+                        SELECT %s FROM %s ORDER BY created_at DESC, id
+                        """.formatted(COLUMNS, TABLE))
                 .query(this::mapRow)
                 .list();
-    }
-
-    /**
-     * Optimistic update of the mutable columns; returns {@code false} when the
-     * row's version no longer matches {@code expectedVersion} (concurrent write).
-     */
-    public boolean update(UUID id, String name, String description, String retryPolicyJson, long expectedVersion) {
-        return jdbc.sql("""
-                        UPDATE %s
-                        SET name = :name, description = :description, retry_policy = CAST(:retryPolicy AS jsonb),
-                            version = version + 1, updated_at = :updatedAt
-                        WHERE id = :id AND version = :expectedVersion
-                        """.formatted(TABLE))
-                .param("id", id)
-                .param("name", name)
-                .param("description", description)
-                .param("retryPolicy", retryPolicyJson)
-                .param("updatedAt", Timestamp.from(Instant.now()))
-                .param("expectedVersion", expectedVersion)
-                .update() == 1;
     }
 
     /** Returns {@code false} if no workflow with the given id exists. */
@@ -95,19 +88,11 @@ public class WorkflowDefinitionRepository {
                 .update() == 1;
     }
 
-    public boolean existsByNameExcluding(String name, UUID excludeId) {
-        return jdbc.sql("SELECT 1 FROM %s WHERE name = :name AND id <> :excludeId".formatted(TABLE))
-                .param("name", name)
-                .param("excludeId", excludeId)
-                .query((rs, rowNum) -> rs.getInt(1))
-                .optional()
-                .isPresent();
-    }
-
     private WorkflowDefinition mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new WorkflowDefinition(
                 rs.getObject("id", UUID.class),
                 rs.getString("name"),
+                rs.getString("semantic_version"),
                 rs.getString("description"),
                 rs.getString("retry_policy"),
                 rs.getLong("version"),

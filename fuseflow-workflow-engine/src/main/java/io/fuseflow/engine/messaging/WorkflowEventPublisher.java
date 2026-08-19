@@ -22,9 +22,8 @@ import java.util.UUID;
  * are published ({@code WorkflowStarted/Completed/Failed}; {@code Paused/Resumed/Cancelled}
  * arrive with Phase 6); per-activity events stay queryable via the engine's history API.
  *
- * <p>Publishing happens only after the surrounding transaction commits (persist → append event
- * → publish, architecture §10.1) and only in the Kafka dispatch mode — the in-memory mode
- * (tests, Phase 2 demo) never touches Kafka.
+ * <p>Publishing happens after the surrounding transaction commits (persist → append event
+ * → publish, architecture §10.1).
  */
 @Component
 public class WorkflowEventPublisher {
@@ -35,25 +34,19 @@ public class WorkflowEventPublisher {
     private final ObjectMapper objectMapper;
     private final AfterCommitDispatcher afterCommit;
     private final String topic;
-    private final boolean enabled;
 
     public WorkflowEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
                                   ObjectMapper objectMapper,
                                   AfterCommitDispatcher afterCommit,
-                                  @Value("${fuseflow.kafka.topic.workflow-events}") String topic,
-                                  @Value("${fuseflow.engine.dispatch-mode:kafka}") String dispatchMode) {
+                                  @Value("${fuseflow.kafka.topic.workflow-events}") String topic) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.afterCommit = afterCommit;
         this.topic = topic;
-        this.enabled = "kafka".equals(dispatchMode);
     }
 
     /** Mirrors a lifecycle event to the topic after the surrounding transaction commits. */
     public void publish(UUID executionId, String eventType, Map<String, Object> payload) {
-        if (!enabled) {
-            return;
-        }
         WorkflowEventMessage message = new WorkflowEventMessage(executionId, eventType, payload, Instant.now());
         afterCommit.runAfterCommit(() -> send(message));
     }

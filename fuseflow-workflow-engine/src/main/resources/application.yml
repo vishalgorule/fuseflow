@@ -46,8 +46,6 @@ spring:
 # to exactly one pool topic (fuseflow-pool.<poolName>) and consumes results from activity-results.
 fuseflow:
   engine:
-    # kafka (default) | in-memory. In-memory keeps the Phase 2 demo auto-completer for tests and
-    # for running a workflow to completion without any worker or broker.
     dispatch-mode: ${FUSEFLOW_ENGINE_DISPATCH_MODE:kafka}
     # Phase 5 engine HA: fixed shard count (identical on every instance) + the shards this
     # instance boot-recovers (all | 0-3 | 0,1,4). Split shards across instances for HA.
@@ -73,6 +71,12 @@ fuseflow:
     poll-interval: ${FUSEFLOW_ENGINE_POLL_INTERVAL:5s}
     # Max due retries claimed per poll cycle — a burst drains across cycles, oldest first.
     poll-batch-size: ${FUSEFLOW_ENGINE_POLL_BATCH_SIZE:500}
+    # Dispatch outbox (post-Phase 7 hardening): the durable hand-off between the scheduling
+    # transaction and the Kafka publish. This poller publishes PENDING rows when routable;
+    # unroutable rows wait here (no retry clock) until a capable pool appears.
+    outbox:
+      poll-interval: ${FUSEFLOW_ENGINE_OUTBOX_POLL_INTERVAL:1s}
+      poll-batch-size: ${FUSEFLOW_ENGINE_OUTBOX_POLL_BATCH_SIZE:500}
     # Self-healing routing: re-seed the pool routing table from the registry on this cadence
     # even without worker-events, so a missed event can never leave routing stale.
     routing:
@@ -92,9 +96,6 @@ fuseflow:
     topics:
       partitions: 1
       replicas: 1
-  demo:
-    activity-delay-ms: 60000
-
 server:
   port: 8082
 

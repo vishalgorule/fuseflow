@@ -35,11 +35,16 @@ public class WorkflowController {
     }
 
     @GetMapping
-    public List<WorkflowResponse> list(@RequestParam(required = false) String name) {
-        // Phase 6: ?name=X lookup for SDK-side idempotent registration (0 or 1 results —
-        // names are unique). Plain GET without params stays the full list.
+    public List<WorkflowResponse> list(@RequestParam(required = false) String name,
+                                       @RequestParam(required = false) String version) {
+        // Phase 6/8: ?name=X returns every version of the workflow (newest first);
+        // ?name=X&version=Y pins one snapshot (0 or 1 results — (name, version) is unique).
+        // Plain GET without params stays the full list (all names × all versions).
         if (name != null && !name.isBlank()) {
-            return workflowService.findByName(name).stream().toList();
+            if (version != null && !version.isBlank()) {
+                return workflowService.findByNameAndVersion(name, version).stream().toList();
+            }
+            return workflowService.findByName(name);
         }
         return workflowService.list();
     }

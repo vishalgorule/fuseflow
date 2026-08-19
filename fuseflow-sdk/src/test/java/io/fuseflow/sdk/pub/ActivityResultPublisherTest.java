@@ -17,19 +17,23 @@ import java.util.concurrent.CompletableFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ActivityResultPublisherTest {
 
     private final KafkaTemplate<String, String> kafkaTemplate = mock(KafkaTemplate.class);
+    private final KafkaTemplate<String, String> startedKafkaTemplate = mock(KafkaTemplate.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ActivityResultPublisher publisher =
-            new ActivityResultPublisher(kafkaTemplate, objectMapper, "activity-results");
+            new ActivityResultPublisher(kafkaTemplate, startedKafkaTemplate, objectMapper, "activity-results");
 
     @BeforeEach
     void setUp() {
         when(kafkaTemplate.send(any(ProducerRecord.class)))
+                .thenAnswer(inv -> CompletableFuture.completedFuture(null));
+        when(startedKafkaTemplate.send(any(ProducerRecord.class)))
                 .thenAnswer(inv -> CompletableFuture.completedFuture(null));
     }
 
@@ -54,5 +58,35 @@ class ActivityResultPublisherTest {
         assertThat(parsed.type()).isEqualTo(ActivityResultType.COMPLETED);
         assertThat(parsed.output()).isEqualTo("{\"x\":1}");
         assertThat(parsed.attempt()).isEqualTo(1);
+    }
+
+    @Test
+    void publishesStartedSignalViaNonTransactionalTemplate() throws Exception {
+        // Post-Phase 7 hardening: the eager STARTED signal must NOT join the pool listener's
+        // container transaction (it would reach the engine only at commit time), so it goes
+        // through the dedicated non-transactional template — terminal results use the
+        // transactional one (atomic with the offset commit).
+        ActivityTask task = new ActivityTask(UUID.randomUUID(), "a", "downloadImage", null, 2);
+
+        publisher.publish(ActivityResultMessage.started(task));
+
+        ArgumentCaptor<ProducerRecord<String, String>> startedCaptor =
+                ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(startedKafkaTemplate).send(startedCaptor.capture());
+        ActivityResultMessage parsed =
+                objectMapper.readValue(startedCaptor.getValue().value(), ActivityResultMessage.class);
+        assertThat(parsed.type()).isEqualTo(ActivityResultType.STARTED);
+        assertThat(parsed.attempt()).isEqualTo(2);
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    void publishesTerminalResultViaTransactionalTemplate() {
+        ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "resizeImage", null, 1);
+
+        publisher.publish(ActivityResultMessage.failed(task, "IllegalArgumentException", "boom"));
+
+        verify(kafkaTemplate).send(any(ProducerRecord.class));
+        verify(startedKafkaTemplate, never()).send(any(ProducerRecord.class));
     }
 }

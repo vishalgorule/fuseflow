@@ -37,6 +37,11 @@ class FuseFlowDefaultsEnvironmentPostProcessorTest {
         assertThat(environment.getProperty("fuseflow.queue.activity-results")).isEqualTo("activity-results");
         assertThat(environment.getProperty("fuseflow.queue.pool-prefix")).isEqualTo("fuseflow-pool");
         assertThat(environment.getProperty("spring.kafka.bootstrap-servers")).isEqualTo("localhost:9092");
+        // Post-Phase 7 hardening: transactional pool listener — the prefix must be unique per
+        // application instance (Spring Kafka makes transactional.id = prefix + n), so the
+        // default embeds a random suffix per JVM.
+        assertThat(environment.getProperty("spring.kafka.producer.transaction-id-prefix"))
+                .startsWith("fuseflow-worker-");
     }
 
     @Test

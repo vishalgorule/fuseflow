@@ -54,6 +54,16 @@ public @interface Workflow {
     /** Unique workflow name — the upsert key at the definition service. */
     String name();
 
+    /**
+     * Semantic version label (Phase 8). Definitions are immutable version snapshots at the
+     * definition service: {@code (name, version)} is the unique key and changing a DAG means
+     * registering a new version. Re-registering the same name with an identical DAG on the
+     * same version is a no-op; a <b>different</b> DAG on the same version fails loud at boot
+     * (the registrar tells the operator to bump this attribute). Defaults to {@code "1"} so
+     * pre-Phase 8 workflows keep working unchanged.
+     */
+    String version() default "1";
+
     /** Optional human-readable description. */
     String description() default "";
 

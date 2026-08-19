@@ -9,6 +9,7 @@ import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
+import io.fuseflow.engine.messaging.WorkflowEventPublisher;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
@@ -43,6 +44,7 @@ class RetryManagerTest {
     private final EventStore eventStore = mock(EventStore.class);
     private final WorkflowFinalizer workflowFinalizer = mock(WorkflowFinalizer.class);
     private final DeadLetterPublisher deadLetterPublisher = mock(DeadLetterPublisher.class);
+    private final WorkflowEventPublisher workflowEventPublisher = mock(WorkflowEventPublisher.class);
     private final ReliabilityProperties properties = new ReliabilityProperties();
 
     /** Real ObjectProvider so the default ifAvailable(Consumer) executes against the mock publisher. */
@@ -69,7 +71,7 @@ class RetryManagerTest {
     };
 
     private final RetryManager retryManager = new RetryManager(activityRepository, executionRepository,
-            definitionReader, eventStore, workflowFinalizer, properties, provider);
+            definitionReader, eventStore, workflowFinalizer, properties, provider, workflowEventPublisher);
 
     private static ActivityExecution activity(ActivityStatus status, int attempt, long version) {
         Instant now = Instant.now();
@@ -103,6 +105,13 @@ class RetryManagerTest {
 
         verify(activityRepository).markRetryWaiting(eq(EXECUTION), eq("a"), eq(2), any(), eq("boom"), eq(null), eq(4L));
         verify(eventStore).append(eq(EXECUTION), eq("ActivityRetryScheduled"), any());
+        // Option B: workers are told the failed attempt is superseded so its queued message
+        // is skipped instead of executed.
+        verify(workflowEventPublisher).publish(eq(EXECUTION), eq("ActivitySuperseded"),
+                org.mockito.ArgumentMatchers.argThat(payload ->
+                        Integer.valueOf(1).equals(payload.get("supersededAttempt"))
+                                && Integer.valueOf(2).equals(payload.get("newAttempt"))
+                                && "a".equals(payload.get("taskId"))));
         verify(activityRepository, never()).markFailed(any(), any(), any(), any(), anyLong());
         verify(workflowFinalizer, never()).failWorkflow(any(), any());
         verify(deadLetterPublisher, never()).publish(any(), any(), any());

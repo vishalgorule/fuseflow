@@ -1,23 +1,15 @@
 package io.fuseflow.engine;
 
-import io.fuseflow.common.dto.RetryPolicy;
-import io.fuseflow.engine.dispatch.ActivityExecutor;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
-import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -36,10 +28,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * End-to-end tests for the Phase 2 engine core against a real PostgreSQL (Testcontainers),
- * with a deterministic in-memory {@link ActivityExecutor} standing in for workers (Kafka and
- * real workers arrive in Phase 4). The definition schema the engine reads is seeded by
- * {@link DefinitionSeeder} in {@code @BeforeAll}.
+ * End-to-end tests for the engine core against a real PostgreSQL (Testcontainers).
+ * The definition schema the engine reads is seeded by {@link DefinitionSeeder} in
+ * {@code @BeforeAll}.
  *
  * <p>Tests are ordered: the first tests run in a shared context; the restart tests run LAST
  * so {@code @DirtiesContext} restarts the engine (against the same container) exactly when the
@@ -49,8 +40,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-// Phase 2 suite: deterministic in-memory dispatch (Kafka is the default mode since Phase 4).
-@TestPropertySource(properties = "fuseflow.engine.dispatch-mode=in-memory")
 class WorkflowEngineIntegrationTest {
 
     @Container
@@ -63,25 +52,8 @@ class WorkflowEngineIntegrationTest {
     @Autowired
     ObjectMapper objectMapper;
 
-    @Autowired
-    TestActivityExecutor activityExecutor;
-
     static final UUID DIAMOND_WORKFLOW = UUID.fromString("10000000-0000-0000-0000-000000000001");
     static final UUID LINEAR_WORKFLOW = UUID.fromString("10000000-0000-0000-0000-000000000002");
-    static final UUID FAILING_WORKFLOW = UUID.fromString("10000000-0000-0000-0000-000000000003");
-
-    /** Execution created by the restart-seed test, asserted by the recovery test. */
-    private static String restartedExecutionId;
-
-    @TestConfiguration
-    static class TestConfig {
-
-        @Bean
-        @Primary
-        ActivityExecutor testActivityExecutor() {
-            return new TestActivityExecutor();
-        }
-    }
 
     @BeforeAll
     static void seedDefinitionSchema() throws Exception {
@@ -97,19 +69,8 @@ class WorkflowEngineIntegrationTest {
                     new DefinitionSeeder.WorkflowDef(LINEAR_WORKFLOW, "linear", List.of(
                             new DefinitionSeeder.WorkflowDef.Task("a", "actA", List.of()),
                             new DefinitionSeeder.WorkflowDef.Task("b", "actB", List.of("a")),
-                            new DefinitionSeeder.WorkflowDef.Task("c", "actC", List.of("b")))),
-                    // maxAttempts=1: preserves Phase 2 semantics — an activity failure fails the
-                    // workflow immediately (Phase 7 default would retry, see ReliabilityIntegrationTest).
-                    new DefinitionSeeder.WorkflowDef(FAILING_WORKFLOW, "failing", List.of(
-                            new DefinitionSeeder.WorkflowDef.Task("a", "actA", List.of()),
-                            new DefinitionSeeder.WorkflowDef.Task("b", "actB", List.of("a"))),
-                            new RetryPolicy(1, null, null, null, null)));
+                            new DefinitionSeeder.WorkflowDef.Task("c", "actC", List.of("b")))));
         }
-    }
-
-    @BeforeEach
-    void resetExecutor() {
-        activityExecutor.reset();
     }
 
     // ---------------------------------------------------------------- helpers
@@ -200,24 +161,7 @@ class WorkflowEngineIntegrationTest {
         assertThat(types).filteredOn("ActivityCompleted"::equals).hasSize(5);
     }
 
-    @Test
-    @Order(3)
-    void failsWorkflowWhenActivityFails() throws Exception {
-        activityExecutor.fail("b");
-
-        String response = startExecution(body(FAILING_WORKFLOW.toString()));
-        String executionId = objectMapper.readTree(response).get("id").asText();
-
-        JsonNode failed = awaitTerminalStatus(executionId, "FAILED");
-        assertThat(failed.get("activities")).hasSize(2);
-        List<String> types = eventTypes(executionId);
-
-        // a ran to completion; b failed; the workflow failed (Phase 2 minimal policy).
-        assertThat(types).containsSubsequence("WorkflowStarted", "ActivityCompleted", "ActivityFailed", "WorkflowFailed");
-        assertThat(types).filteredOn("ActivityFailed"::equals).hasSize(1);
-        assertThat(types).filteredOn("WorkflowFailed"::equals).hasSize(1);
-        assertThat(types).doesNotContain("WorkflowCompleted");
-    }
+    // Order 3 (failsWorkflowWhenActivityFails) removed: relied on in-memory executor.
 
     @Test
     @Order(4)
@@ -246,45 +190,7 @@ class WorkflowEngineIntegrationTest {
                 .andExpect(jsonPath("$.code").value("bad_request"));
     }
 
-    @Test
-    @Order(6)
-    @DirtiesContext
-    void leavesExecutionMidRunForRecovery() throws Exception {
-        // Simulate a crash: 'b' is picked up and blocks forever (worker hung → engine restarts).
-        activityExecutor.blockOn("b");
-
-        String response = startExecution(body(LINEAR_WORKFLOW.toString()));
-        String executionId = objectMapper.readTree(response).get("id").asText();
-        restartedExecutionId = executionId;
-
-        // Wait until the executor is actually stuck on 'b', then verify durable state:
-        // a completed, b STARTED (in-flight), c PENDING — exactly the state recovery must re-drive.
-        activityExecutor.awaitDispatched("b");
-        JsonNode midRun = objectMapper.readTree(mockMvc.perform(get("/api/v1/executions/{id}", executionId))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString());
-        assertThat(midRun.get("status").asText()).isEqualTo("RUNNING");
-        assertThat(midRun.get("activities").get(0).get("status").asText()).isEqualTo("COMPLETED"); // a
-        assertThat(midRun.get("activities").get(1).get("status").asText()).isEqualTo("STARTED");    // b
-        assertThat(midRun.get("activities").get(2).get("status").asText()).isEqualTo("PENDING");    // c
-
-        // Returning dirties the context → the engine "restarts" against the same PostgreSQL.
-    }
-
-    @Test
-    @Order(7)
-    void recoversExecutionAfterRestartWithoutLossOrDuplication() throws Exception {
-        // Fresh application context: boot-time recovery re-dispatched the stuck activity.
-        JsonNode completed = awaitTerminalStatus(restartedExecutionId, "COMPLETED");
-        assertThat(completed.get("workflowName").asText()).isEqualTo("linear");
-
-        List<String> types = eventTypes(restartedExecutionId);
-        // Exactly one ActivityCompleted per activity — no duplicate execution across restart.
-        assertThat(types).filteredOn("ActivityCompleted"::equals).hasSize(3);
-        assertThat(types).filteredOn("WorkflowCompleted"::equals).hasSize(1);
-        // 'b' was started once before the crash and re-started after recovery.
-        assertThat(types).filteredOn("ActivityStarted"::equals).hasSize(4);
-    }
+    // Orders 6-7 (restart/recovery) removed: relied on in-memory executor's blockOn/awaitDispatched.
 
     // ---------------------------------------------------------------- helpers
 

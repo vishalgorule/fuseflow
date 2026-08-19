@@ -46,4 +46,26 @@ public class ExecutionController {
     public List<EventResponse> history(@PathVariable UUID id) {
         return executionManager.history(id);
     }
+
+    // ---------------------------------------------------------------- lifecycle (Phase 8, FR-2)
+
+    @PostMapping("/{id}/pause")
+    public ExecutionResponse pause(@PathVariable UUID id) {
+        return executionManager.pause(id);
+    }
+
+    @PostMapping("/{id}/resume")
+    public ExecutionResponse resume(@PathVariable UUID id) {
+        return executionManager.resume(id);
+    }
+
+    @PostMapping("/{id}/cancel")
+    public ExecutionResponse cancel(@PathVariable UUID id) {
+        return executionManager.cancel(id);
+    }
+
+    @PostMapping("/{id}/restart")
+    public ResponseEntity<ExecutionResponse> restart(@PathVariable UUID id) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(executionManager.restart(id));
+    }
 }

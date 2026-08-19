@@ -34,6 +34,7 @@ public class ReliabilityProperties {
 
     private Retry retry = new Retry();
     private Timeout timeout = new Timeout();
+    private Outbox outbox = new Outbox();
     private Duration pollInterval = Duration.ofSeconds(5);
     private int pollBatchSize = 500;
 
@@ -51,6 +52,14 @@ public class ReliabilityProperties {
 
     public void setTimeout(Timeout timeout) {
         this.timeout = timeout;
+    }
+
+    public Outbox getOutbox() {
+        return outbox;
+    }
+
+    public void setOutbox(Outbox outbox) {
+        this.outbox = outbox;
     }
 
     public Duration getPollInterval() {
@@ -135,6 +144,32 @@ public class ReliabilityProperties {
 
         public void setExecution(Duration execution) {
             this.execution = execution;
+        }
+    }
+
+    /**
+     * Dispatch outbox (post-Phase 7 hardening) — the durable hand-off between the scheduling
+     * transaction and the Kafka publish. The poller publishes PENDING rows when routable;
+     * unroutable rows wait here (no retry clock) until a capable pool appears.
+     */
+    public static class Outbox {
+        private Duration pollInterval = Duration.ofSeconds(1);
+        private int pollBatchSize = 500;
+
+        public Duration getPollInterval() {
+            return pollInterval;
+        }
+
+        public void setPollInterval(Duration pollInterval) {
+            this.pollInterval = pollInterval;
+        }
+
+        public int getPollBatchSize() {
+            return pollBatchSize;
+        }
+
+        public void setPollBatchSize(int pollBatchSize) {
+            this.pollBatchSize = pollBatchSize;
         }
     }
 }

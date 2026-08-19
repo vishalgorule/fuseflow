@@ -94,6 +94,21 @@ class WorkflowScannerTest {
     }
 
     @Test
+    void mapsSemanticVersionFromAnnotation() {
+        // Phase 8: @Workflow.version() travels in the wire request; the default is "1".
+        try (AnnotationConfigApplicationContext context =
+                     new AnnotationConfigApplicationContext(VersionedConfig.class)) {
+            WorkflowRequest request = context.getBean(WorkflowRegistry.class).all().get(0).request();
+            assertThat(request.semanticVersion()).isEqualTo("2.1");
+        }
+        try (AnnotationConfigApplicationContext context =
+                     new AnnotationConfigApplicationContext(ScanConfig.class)) {
+            WorkflowRequest request = context.getBean(WorkflowRegistry.class).all().get(0).request();
+            assertThat(request.semanticVersion()).isEqualTo("1");
+        }
+    }
+
+    @Test
     void mapsRetryPoliciesFromAnnotations() {
         // Phase 7: @Retry on the workflow (default) and on steps/activities (per-task override)
         // maps onto the shared wire record; unset knobs stay null so the next level can decide.
@@ -225,6 +240,11 @@ class WorkflowScannerTest {
     static class ContainerWorkflow {
     }
 
+    @Workflow(name = "versioned", version = "2.1")
+    @Step(id = "a", activity = "actA")
+    static class VersionedWorkflow {
+    }
+
     @Workflow(name = "retry-policy", description = "desc",
             retry = @Retry(maxAttempts = 4, fixedDelaySeconds = 3, exponentialBackoff = true,
                     backoffMultiplier = 2.0, nonRetryableExceptions = "java.lang.IllegalArgumentException"))
@@ -318,6 +338,14 @@ class WorkflowScannerTest {
         @Bean
         ContainerWorkflow containerWorkflow() {
             return new ContainerWorkflow();
+        }
+    }
+
+    @Configuration
+    static class VersionedConfig extends BaseConfig {
+        @Bean
+        VersionedWorkflow versionedWorkflow() {
+            return new VersionedWorkflow();
         }
     }
 

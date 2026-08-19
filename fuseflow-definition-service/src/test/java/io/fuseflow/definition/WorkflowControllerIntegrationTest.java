@@ -18,6 +18,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -201,7 +202,9 @@ class WorkflowControllerIntegrationTest {
 
     @Test
     @Order(8)
-    void updatesWorkflowReplacingTasksAndBumpingVersion() throws Exception {
+    void putOnExistingVersionIsRejectedAsImmutable() throws Exception {
+        // Phase 8: definitions are immutable version snapshots — PUT (mutating a snapshot)
+        // is always rejected with 409; changing a DAG means registering a new version.
         String id = register("updatable", """
                 [{"id": "old", "activity": "oldActivity"}]
                 """);
@@ -215,19 +218,15 @@ class WorkflowControllerIntegrationTest {
                   ]
                 }
                 """;
-        // Response tasks are ordered by task id: dep, new.
         mockMvc.perform(put("/api/v1/workflows/{id}", id).contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.version").value(1))
-                .andExpect(jsonPath("$.tasks.length()").value(2))
-                .andExpect(jsonPath("$.tasks[0].id").value("dep"))
-                .andExpect(jsonPath("$.tasks[1].id").value("new"))
-                .andExpect(jsonPath("$.tasks[1].dependsOn[0]").value("dep"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("workflow_version_immutable"));
 
+        // The original snapshot is untouched.
         mockMvc.perform(get("/api/v1/workflows/{id}", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.version").value(1))
-                .andExpect(jsonPath("$.tasks.length()").value(2));
+                .andExpect(jsonPath("$.version").value(0))
+                .andExpect(jsonPath("$.tasks.length()").value(1));
     }
 
     @Test
@@ -244,17 +243,40 @@ class WorkflowControllerIntegrationTest {
 
     @Test
     @Order(10)
-    void updateWithInvalidDagReturns400() throws Exception {
-        String id = register("update-invalid", """
+    void registersMultipleVersionsOfTheSameWorkflow() throws Exception {
+        // Phase 8: (name, semanticVersion) is the unique key — registering a different DAG
+        // under a NEW version succeeds and the versions coexist.
+        String v1 = register("versioned", """
                 [{"id": "a", "activity": "actA"}]
                 """);
-        mockMvc.perform(put("/api/v1/workflows/{id}", id)
+
+        String v2 = postAndExtractId("""
+                {"name": "versioned", "semanticVersion": "2",
+                 "tasks": [{"id": "b", "activity": "actB"}, {"id": "c", "activity": "actC", "dependsOn": ["b"]}]}
+                """);
+
+        assertThat(v2).isNotEqualTo(v1);
+        // The same (name, version) pair cannot be registered twice.
+        mockMvc.perform(post("/api/v1/workflows")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name": "update-invalid", "tasks": [{"id": "a", "activity": "actA", "dependsOn": ["nope"]}]}
+                                {"name": "versioned", "semanticVersion": "2", "tasks": [{"id": "x", "activity": "actX"}]}
                                 """))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("invalid_workflow"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("workflow_name_conflict"));
+
+        // ?name=X returns every version (newest first); ?name=X&version=Y pins one.
+        mockMvc.perform(get("/api/v1/workflows").param("name", "versioned"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2));
+        mockMvc.perform(get("/api/v1/workflows").param("name", "versioned").param("version", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].semanticVersion").value("2"))
+                .andExpect(jsonPath("$[0].tasks.length()").value(2));
+        mockMvc.perform(get("/api/v1/workflows").param("name", "versioned").param("version", "9"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test

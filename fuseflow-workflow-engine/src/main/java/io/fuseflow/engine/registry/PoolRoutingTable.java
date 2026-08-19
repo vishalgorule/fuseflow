@@ -100,6 +100,26 @@ public class PoolRoutingTable {
         return concurrencyByPool.keySet();
     }
 
+    /**
+     * The current capability set — every activity advertised by at least one pool, regardless
+     * of liveness (used for diagnostics).
+     */
+    public Set<String> activities() {
+        return byActivity.keySet();
+    }
+
+    /**
+     * The routable set — activities with at least one <b>ONLINE</b> pool. The rejoin sweep
+     * gates on THIS growing (post-Phase 7 hardening): an activity already in the table via an
+     * OFFLINE pool must still trigger the sweep the moment a pool for it comes ONLINE.
+     */
+    public Set<String> routableActivities() {
+        return byActivity.entrySet().stream()
+                .filter(e -> e.getValue().stream().anyMatch(PoolTarget::online))
+                .map(Map.Entry::getKey)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
     /** The declared concurrency of a pool (defaults to 1) — drives its topic's partitions. */
     public int poolConcurrency(String poolName) {
         return concurrencyByPool.getOrDefault(poolName, 1);
