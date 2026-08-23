@@ -135,6 +135,13 @@ public class PoolRoutingTable {
         return byActivity.size();
     }
 
+    /** Count of ONLINE workers across all pools (for the active-workers gauge). */
+    public int onlineWorkerCount(List<WorkerResponse> workers) {
+        return (int) workers.stream()
+                .filter(w -> "ONLINE".equalsIgnoreCase(w.status()))
+                .count();
+    }
+
     private String topic(String poolName) {
         return topicPrefix + "." + poolName;
     }

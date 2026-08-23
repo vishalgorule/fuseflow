@@ -27,6 +27,22 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Phase 9 observability: Micrometer + Prometheus metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- Phase 9 observability: OpenTelemetry tracing (Boot 4 starter) — worker-side spans
+             continue the engine's dispatch trace via the W3C traceparent header the SDK
+             propagates through Kafka, and result publishes continue it back to the engine. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

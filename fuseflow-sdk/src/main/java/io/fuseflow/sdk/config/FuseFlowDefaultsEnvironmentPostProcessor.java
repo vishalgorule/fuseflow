@@ -63,6 +63,9 @@ public class FuseFlowDefaultsEnvironmentPostProcessor implements EnvironmentPost
         // Pool dispatch queue prefix — the worker's queue is derived as
         // <pool-prefix>.<pool>; the engine ships the same default.
         defaults.put("fuseflow.queue.pool-prefix", "fuseflow-pool");
+        // Observability: worker-side Kafka listener/template metrics (spring_kafka_*).
+        defaults.put("spring.kafka.listener.observation-enabled", "true");
+        defaults.put("spring.kafka.template.observation-enabled", "true");
         environment.getPropertySources().addLast(new MapPropertySource(DEFAULTS_SOURCE, defaults));
 
         // Broker discovery only for worker runtimes; the registry is the single endpoint the

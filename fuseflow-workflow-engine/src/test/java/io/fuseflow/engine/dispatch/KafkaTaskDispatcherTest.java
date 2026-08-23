@@ -2,7 +2,9 @@ package io.fuseflow.engine.dispatch;
 
 import io.fuseflow.common.dto.WorkerResponse;
 import io.fuseflow.common.messaging.ActivityTask;
+import io.fuseflow.engine.TestProviders;
 import io.fuseflow.engine.config.ReliabilityProperties;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.registry.PoolRoutingTable;
 import io.fuseflow.engine.repository.EventStore;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -34,6 +36,7 @@ class KafkaTaskDispatcherTest {
     private final PoolRoutingTable routingTable = new PoolRoutingTable("fuseflow-pool");
     private final EventStore eventStore = mock(EventStore.class);
     private final ReliabilityProperties properties = new ReliabilityProperties();
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
 
     private static WorkerResponse worker(String pool, String... activities) {
         Instant now = Instant.now();
@@ -45,7 +48,7 @@ class KafkaTaskDispatcherTest {
     void publishesToTheResolvedPoolTopic() throws Exception {
         routingTable.seed(List.of(worker("media", "resizeImage")));
         KafkaTaskDispatcher dispatcher =
-                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore, properties);
+                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore, properties, metrics, TestProviders.emptyProvider(), TestProviders.emptyProvider());
         when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, String>>any()))
                 .thenAnswer(inv -> CompletableFuture.completedFuture(null));
         ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "resizeImage", null, 1);
@@ -73,7 +76,7 @@ class KafkaTaskDispatcherTest {
     @Test
     void unroutableTaskStaysScheduledWithDiagnosticEvent() {
         KafkaTaskDispatcher dispatcher =
-                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore, properties);
+                new KafkaTaskDispatcher(kafkaTemplate, objectMapper, routingTable, eventStore, properties, metrics, TestProviders.emptyProvider(), TestProviders.emptyProvider());
         ActivityTask task = new ActivityTask(UUID.randomUUID(), "b", "noSuchActivity", null, 1);
 
         dispatcher.dispatch(task);

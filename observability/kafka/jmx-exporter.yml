@@ -1,0 +1,90 @@
+# Kafka JMX Exporter Configuration
+# Standalone HTTP server mode: scrapes the Kafka broker's JMX endpoint (kafka:9999)
+# and exposes Prometheus metrics on port 9100.
+hostPort: "kafka:9999"
+
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# Rules for transforming JMX MBean names to Prometheus metrics
+rules:
+  # ── Kafka Broker Metrics ──
+  # Under-replicated partitions (critical health indicator)
+  - pattern: kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value
+    name: kafka_server_replicamanager_under_replicated_partitions
+    help: Number of under-replicated partitions
+
+  # ISR shrink/expand rate
+  - pattern: kafka.server<type=ReplicaManager, name=IsrShrinksPerSec><>Count
+    name: kafka_server_replicamanager_isr_shrinks_total
+    help: ISR shrinks per second
+  - pattern: kafka.server<type=ReplicaManager, name=IsrExpandsPerSec><>Count
+    name: kafka_server_replicamanager_isr_expands_total
+    help: ISR expands per second
+
+  # Active controllers
+  - pattern: kafka.server<type=KafkaServer, name=ActiveControllerCount><>Value
+    name: kafka_server_active_controller_count
+    help: 1 if this broker is the controller, 0 otherwise
+
+  # Request rates
+  - pattern: kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(.+), version=(\d+)><>Count
+    name: kafka_network_request_total
+    labels:
+      request: "$1"
+      version: "$2"
+    help: Total requests per second by type
+
+  # Request latency
+  - pattern: kafka.network<type=RequestMetrics, name=TotalTimeMs, request=(.+), version=(\d+)><>Count
+    name: kafka_network_request_duration_seconds_count
+    labels:
+      request: "$1"
+      version: "$2"
+  - pattern: kafka.network<type=RequestMetrics, name=TotalTimeMs, request=(.+), version=(\d+)><>Sum
+    name: kafka_network_request_duration_seconds_sum
+    labels:
+      request: "$1"
+      version: "$2"
+
+  # ── Kafka Log Metrics ──
+  - pattern: kafka.log<type=Log, name=Size, topic=(.+), partition=(.+)><>Value
+    name: kafka_log_size_bytes
+    labels:
+      topic: "$1"
+      partition: "$2"
+    help: Log segment size in bytes
+
+  # Log flush latency
+  - pattern: kafka.log<type=LogFlushStats, name=LogFlushRateAndTimeMs><>Count
+    name: kafka_log_flush_total
+
+  # ── Kafka Producer Metrics ──
+  - pattern: kafka.producer<type=producer-metrics, client-id=(.+)><>queue-size
+    name: kafka_producer_queue_size
+    labels:
+      client_id: "$1"
+  - pattern: kafka.producer<type=producer-metrics, client-id=(.+)><>record-error-rate
+    name: kafka_producer_record_error_rate
+    labels:
+      client_id: "$1"
+  - pattern: kafka.producer<type=producer-metrics, client-id=(.+)><>record-send-rate
+    name: kafka_producer_record_send_rate
+    labels:
+      client_id: "$1"
+
+  # ── Kafka Consumer Metrics ──
+  - pattern: kafka.consumer<type=consumer-metrics, client-id=(.+)><>records-lag-max
+    name: kafka_consumer_records_lag_max
+    labels:
+      client_id: "$1"
+    help: Maximum lag in records
+  - pattern: kafka.consumer<type=consumer-metrics, client-id=(.+)><>records-consumed-rate
+    name: kafka_consumer_records_consumed_rate
+    labels:
+      client_id: "$1"
+  - pattern: kafka.consumer<type=consumer-coordinator-metrics, client-id=(.+)><>last-rebalance-seconds-ago
+    name: kafka_consumer_last_rebalance_seconds_ago
+    labels:
+      client_id: "$1"
+    help: Time since last consumer group rebalance

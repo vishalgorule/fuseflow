@@ -5,10 +5,12 @@ import io.fuseflow.engine.config.ReliabilityProperties;
 import io.fuseflow.engine.definition.WorkflowDefinitionReader;
 import io.fuseflow.engine.definition.WorkflowDefinitionSnapshot;
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.messaging.WorkflowEventPublisher;
+import io.micrometer.observation.annotation.Observed;
 import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
@@ -54,6 +56,7 @@ public class RetryManager {
     private final ReliabilityProperties properties;
     private final ObjectProvider<DeadLetterPublisher> deadLetterPublisher;
     private final WorkflowEventPublisher workflowEventPublisher;
+    private final EngineMetrics metrics;
 
     public RetryManager(ActivityExecutionRepository activityRepository,
                         WorkflowExecutionRepository executionRepository,
@@ -62,7 +65,8 @@ public class RetryManager {
                         WorkflowFinalizer workflowFinalizer,
                         ReliabilityProperties properties,
                         ObjectProvider<DeadLetterPublisher> deadLetterPublisher,
-                        WorkflowEventPublisher workflowEventPublisher) {
+                        WorkflowEventPublisher workflowEventPublisher,
+                        EngineMetrics metrics) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.definitionReader = definitionReader;
@@ -71,6 +75,7 @@ public class RetryManager {
         this.properties = properties;
         this.deadLetterPublisher = deadLetterPublisher;
         this.workflowEventPublisher = workflowEventPublisher;
+        this.metrics = metrics;
     }
 
     /**
@@ -78,6 +83,7 @@ public class RetryManager {
      * {@code TimeoutManager} for start/execution timeouts). Retries per policy or fails the
      * activity and the workflow when attempts are exhausted / the failure is non-retryable.
      */
+    @Observed(name = "fuseflow.engine.retry")
     public void onActivityFailed(ActivityResult result) {
         ActivityExecution activity = activityRepository.findById(result.executionId(), result.taskId()).orElse(null);
         if (activity == null || (activity.status() != ActivityStatus.STARTED
@@ -88,19 +94,23 @@ public class RetryManager {
             return;
         }
 
+        WorkflowExecution execution = executionRepository.findById(activity.workflowExecutionId()).orElse(null);
+        String workflowName = execution == null ? "unknown" : execution.workflowName();
         String error = result.error() == null ? "activity failed" : result.error();
         String errorType = result.errorType();
-        RetryPolicy policy = resolvePolicy(activity);
+        RetryPolicy policy = resolvePolicy(activity, execution);
         if (isNonRetryable(policy, errorType) || activity.attempt() >= maxAttempts(policy)) {
-            failTerminal(activity, error, errorType, policy);
+            failTerminal(activity, workflowName, error, errorType, policy);
         } else {
-            scheduleRetry(activity, error, errorType, policy);
+            metrics.activityRetried(workflowName);
+            scheduleRetry(activity, workflowName, error, errorType, policy);
         }
     }
 
     // ---------------------------------------------------------------- internals
 
-    private void scheduleRetry(ActivityExecution activity, String error, String errorType, RetryPolicy policy) {
+    private void scheduleRetry(ActivityExecution activity, String workflowName,
+                               String error, String errorType, RetryPolicy policy) {
         int newAttempt = activity.attempt() + 1;
         Instant dueAt = dueAt(activity.attempt(), policy);
         if (activityRepository.markRetryWaiting(activity.workflowExecutionId(), activity.taskId(),
@@ -112,6 +122,7 @@ public class RetryManager {
                     "retryDueAt", dueAt.toString(),
                     "error", error,
                     "errorType", errorType));
+            metrics.recordRetryAttempts(workflowName, newAttempt);
             // Option B: tell workers the just-failed attempt is superseded, so any queued
             // message for it is skipped instead of executed (a worker-side control signal on
             // the workflow-events topic — the DB attempt guard remains the source of truth).
@@ -126,7 +137,8 @@ public class RetryManager {
         }
     }
 
-    private void failTerminal(ActivityExecution activity, String error, String errorType, RetryPolicy policy) {
+    private void failTerminal(ActivityExecution activity, String workflowName,
+                              String error, String errorType, RetryPolicy policy) {
         if (activityRepository.markFailed(activity.workflowExecutionId(), activity.taskId(),
                 error, errorType, activity.version())) {
             eventStore.append(activity.workflowExecutionId(), "ActivityFailed", payload(
@@ -135,7 +147,9 @@ public class RetryManager {
                     "attempt", activity.attempt(),
                     "error", error,
                     "errorType", errorType));
+            metrics.activityFailed(workflowName);
             deadLetterPublisher.ifAvailable(publisher -> publisher.publish(activity, error, errorType));
+            metrics.activityDeadLettered(workflowName);
             workflowFinalizer.failWorkflow(activity.workflowExecutionId(), error);
             log.info("Activity {} of execution {} failed terminally (attempt {}) — workflow failed",
                     activity.taskId(), activity.workflowExecutionId(), activity.attempt());
@@ -143,10 +157,9 @@ public class RetryManager {
     }
 
     /** Effective policy: task → workflow → engine defaults, per knob. */
-    private RetryPolicy resolvePolicy(ActivityExecution activity) {
+    private RetryPolicy resolvePolicy(ActivityExecution activity, WorkflowExecution execution) {
         RetryPolicy taskPolicy = null;
         RetryPolicy workflowPolicy = null;
-        WorkflowExecution execution = executionRepository.findById(activity.workflowExecutionId()).orElse(null);
         if (execution != null) {
             WorkflowDefinitionSnapshot snapshot = definitionReader.find(execution.workflowId()).orElse(null);
             if (snapshot != null) {

@@ -1,6 +1,7 @@
 package io.fuseflow.engine.registry;
 
 import io.fuseflow.common.dto.WorkerResponse;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -41,9 +42,10 @@ class PoolRoutingServiceTest {
     private final ActivityExecutionRepository activityRepository = mock(ActivityExecutionRepository.class);
     private final WorkflowExecutionRepository executionRepository = mock(WorkflowExecutionRepository.class);
     private final Scheduler scheduler = mock(Scheduler.class);
+    private final EngineMetrics engineMetrics = mock(EngineMetrics.class);
     private final PoolRoutingService service =
             new PoolRoutingService(registryClient, routingTable, topicProvisioner,
-                    activityRepository, executionRepository, scheduler);
+                    activityRepository, executionRepository, scheduler, engineMetrics);
 
     private static WorkerResponse worker(String pool, String status, String... activities) {
         Instant now = Instant.now();

@@ -4,6 +4,8 @@ import io.fuseflow.common.correlation.CorrelationId;
 import io.fuseflow.common.messaging.ActivityResultMessage;
 import io.fuseflow.common.messaging.ActivityResultType;
 import io.fuseflow.common.messaging.ActivityTask;
+import io.fuseflow.sdk.TestProviders;
+import io.fuseflow.sdk.runtime.WorkerMetrics;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,7 +29,7 @@ class ActivityResultPublisherTest {
     private final KafkaTemplate<String, String> startedKafkaTemplate = mock(KafkaTemplate.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ActivityResultPublisher publisher =
-            new ActivityResultPublisher(kafkaTemplate, startedKafkaTemplate, objectMapper, "activity-results");
+            new ActivityResultPublisher(kafkaTemplate, startedKafkaTemplate, objectMapper, "activity-results", new WorkerMetrics(TestProviders.emptyProvider()), TestProviders.emptyProvider(), TestProviders.emptyProvider());
 
     @BeforeEach
     void setUp() {

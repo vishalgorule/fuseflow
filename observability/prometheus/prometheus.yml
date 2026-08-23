@@ -1,0 +1,98 @@
+# FuseFlow Prometheus Configuration (Phase 9 Observability)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Load alerting and recording rules
+rule_files:
+  - /etc/prometheus/recording.yml
+  - /etc/prometheus/alerting.yml
+
+scrape_configs:
+  # ────────────────────────────────────────────────────────────────
+  # Application Services (Spring Boot Actuator /prometheus endpoint)
+  # ────────────────────────────────────────────────────────────────
+
+  # Workflow Engine metrics — HA instance A (shards 0-3)
+  - job_name: 'fuseflow-workflow-engine'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8082']
+        labels:
+          service: 'workflow-engine'
+          engine-node: 'a'
+
+  # Workflow Engine metrics — HA instance B (shards 4-7). Both instances are scraped so
+  # throughput totals are complete and per-instance gauges (workers.active, workflow.running,
+  # workflow.executions — all shared-DB or registry-derived) are compared with max, not sum.
+  - job_name: 'fuseflow-workflow-engine-b'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8084']
+        labels:
+          service: 'workflow-engine'
+          engine-node: 'b'
+
+  # Definition Service metrics
+  - job_name: 'fuseflow-definition-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8081']
+        labels:
+          service: 'definition-service'
+
+  # Worker Registry metrics
+  - job_name: 'fuseflow-worker-registry'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8083']
+        labels:
+          service: 'worker-registry'
+
+  # Sample Workers metrics
+  - job_name: 'fuseflow-sample-workers'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8090']
+        labels:
+          service: 'sample-workers'
+    scrape_interval: 30s
+
+  # Fleet workers (ports 8100+, io/media pools). Targets come from file_sd — the file is
+  # rewritten by scripts/start-fleet-workers.sh with only the ports actually launched, so
+  # unused ports never show DOWN (and never trip the target-down alert). The Worker Health
+  # dashboard queries the fuseflow_worker_* metrics these workers export.
+  - job_name: 'fuseflow-fleet-workers'
+    metrics_path: '/actuator/prometheus'
+    file_sd_configs:
+      - files: ['/etc/prometheus/fleet-workers.json']
+        refresh_interval: 30s
+    scrape_interval: 30s
+
+  # ────────────────────────────────────────────────────────────────
+  # Kafka infrastructure
+  # ────────────────────────────────────────────────────────────────
+
+  # Kafka broker metrics — JMX exporter running as a Java agent inside the broker
+  # (observability/kafka/jmx-agent.yml), exposes kafka_server_replicamanager_*,
+  # ISR, request rates, etc. on kafka:9100.
+  - job_name: 'kafka-broker'
+    static_configs:
+      - targets: ['kafka:9100']
+        labels:
+          service: 'kafka'
+
+  # Kafka consumer-group lag — kafka-lag-exporter (observability/kafka/lag-exporter.conf),
+  # exposes kafka_consumergroup_lag per (consumergroup, topic, partition).
+  - job_name: 'kafka-lag-exporter'
+    static_configs:
+      - targets: ['kafka-lag-exporter:9308']
+        labels:
+          service: 'kafka'
+
+  # ────────────────────────────────────────────────────────────────
+  # Prometheus Self-Monitoring
+  # ────────────────────────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

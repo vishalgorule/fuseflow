@@ -1,0 +1,18 @@
+# Grafana Datasource Provisioning (Phase 9 Observability)
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: PBFA97CFB590B2093
+    editable: false
+    
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    uid: P890C5B0-A7A1-4E58-B942-5D4B6C7E8F0A
+    editable: false

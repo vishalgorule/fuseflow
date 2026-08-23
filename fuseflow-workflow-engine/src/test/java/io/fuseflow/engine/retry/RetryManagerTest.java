@@ -5,6 +5,7 @@ import io.fuseflow.engine.config.ReliabilityProperties;
 import io.fuseflow.engine.definition.WorkflowDefinitionReader;
 import io.fuseflow.engine.definition.WorkflowDefinitionSnapshot;
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -46,6 +47,7 @@ class RetryManagerTest {
     private final DeadLetterPublisher deadLetterPublisher = mock(DeadLetterPublisher.class);
     private final WorkflowEventPublisher workflowEventPublisher = mock(WorkflowEventPublisher.class);
     private final ReliabilityProperties properties = new ReliabilityProperties();
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
 
     /** Real ObjectProvider so the default ifAvailable(Consumer) executes against the mock publisher. */
     private final ObjectProvider<DeadLetterPublisher> provider = new ObjectProvider<>() {
@@ -71,7 +73,7 @@ class RetryManagerTest {
     };
 
     private final RetryManager retryManager = new RetryManager(activityRepository, executionRepository,
-            definitionReader, eventStore, workflowFinalizer, properties, provider, workflowEventPublisher);
+            definitionReader, eventStore, workflowFinalizer, properties, provider, workflowEventPublisher, metrics);
 
     private static ActivityExecution activity(ActivityStatus status, int attempt, long version) {
         Instant now = Instant.now();

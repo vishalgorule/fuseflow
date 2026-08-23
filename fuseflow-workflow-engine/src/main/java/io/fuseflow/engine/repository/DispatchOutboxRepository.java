@@ -65,6 +65,20 @@ public class DispatchOutboxRepository {
                 .list();
     }
 
+    /**
+     * Age in seconds of the oldest PENDING dispatch row (0 when the queue is empty). A growing
+     * value means a dispatch is stuck — the platform signal that pairs with the pending count.
+     */
+    public long maxPendingAgeSeconds() {
+        Long age = jdbc.sql("""
+                        SELECT EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::bigint
+                        FROM %s WHERE status = 'PENDING'
+                        """.formatted(TABLE))
+                .query((rs, rowNum) -> rs.getLong(1))
+                .single();
+        return age == null ? 0 : age;
+    }
+
     /** Marks the row published after the dispatch is handed to the dispatcher (guarded). */
     public boolean markPublished(UUID id) {
         return jdbc.sql("""
@@ -74,6 +88,25 @@ public class DispatchOutboxRepository {
                 .param("id", id)
                 .param("now", Timestamp.from(Instant.now()))
                 .update() == 1;
+    }
+
+    /**
+     * Marks a batch of rows published in one statement instead of one UPDATE per row — the
+     * outbox poller would otherwise do a synchronous DB round trip per dispatched entry,
+     * capping dispatch throughput at ~1-2ms × batch size per tick. Guarded identically to
+     * {@link #markPublished}; rows already PUBLISHED (e.g. re-published after a crash) are no-ops.
+     */
+    public void markPublishedBatch(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return;
+        }
+        jdbc.sql("""
+                        UPDATE %s SET status = 'PUBLISHED', published_at = :now
+                        WHERE id IN (:ids) AND status = 'PENDING'
+                        """.formatted(TABLE))
+                .param("ids", ids)
+                .param("now", Timestamp.from(Instant.now()))
+                .update();
     }
 
     /**

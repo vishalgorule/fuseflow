@@ -45,6 +45,7 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
     private final ActivityRegistry activityRegistry;
     private final RegistryClient registryClient;
     private final ActivityResultPublisher resultPublisher;
+    private final WorkerMetrics metrics;
     private final ObjectMapper objectMapper;
     private final ScheduledExecutorService heartbeatExecutor =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -57,6 +58,7 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
                           ActivityRegistry activityRegistry,
                           RegistryClient registryClient,
                           ActivityResultPublisher resultPublisher,
+                          WorkerMetrics metrics,
                           ObjectMapper objectMapper) {
         this.id = properties.id() != null ? properties.id() : UUID.randomUUID();
         this.host = blankToDefault(properties.host(), defaultHost());
@@ -73,6 +75,7 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
         this.activityRegistry = activityRegistry;
         this.registryClient = registryClient;
         this.resultPublisher = resultPublisher;
+        this.metrics = metrics;
         this.objectMapper = objectMapper;
     }
 
@@ -98,13 +101,19 @@ public class FuseFlowWorker implements ApplicationRunner, DisposableBean {
     public void execute(ActivityTask task, Runnable onComplete) {
         ActivityContext context = new ActivityContext(task.executionId(), task.taskId(),
                 task.activityName(), task.attempt(), task.input());
+        long start = System.nanoTime();
+        metrics.activityStarted();
         resultPublisher.publish(ActivityResultMessage.started(task));
         try {
             Object output = activityRegistry.execute(task.activityName(), context);
+            metrics.recordActivityExecutionDuration(System.nanoTime() - start, TimeUnit.NANOSECONDS);
+            metrics.activityCompleted();
             resultPublisher.publish(ActivityResultMessage.completed(task, toJson(output)));
         } catch (Exception ex) {
             log.error("Activity {} of execution {} failed: {}",
                     task.activityName(), task.executionId(), ex.getMessage(), ex);
+            metrics.recordActivityExecutionDuration(System.nanoTime() - start, TimeUnit.NANOSECONDS);
+            metrics.activityFailed();
             // Phase 7: send the exception class name so the engine can classify the failure as
             // non-retryable per the retry policy's nonRetryableExceptions.
             resultPublisher.publish(ActivityResultMessage.failed(task, ex.getClass().getName(), ex.getMessage()));

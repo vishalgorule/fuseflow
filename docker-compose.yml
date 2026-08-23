@@ -39,15 +39,34 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Phase 9: run the JMX exporter as a Java agent inside the broker (no remote JMX/RMI
+      # needed) — exposes Prometheus metrics on port 9100 using observability/kafka/jmx-agent.yml.
+      KAFKA_OPTS: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9100:/opt/jmx-exporter/config.yml"
     ports:
       - "9092:9092"
+      - "9100:9100"
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - ./observability/kafka/lib/jmx_prometheus_javaagent.jar:/opt/jmx-exporter/jmx_prometheus_javaagent.jar:ro
+      - ./observability/kafka/jmx-agent.yml:/opt/jmx-exporter/config.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "unset KAFKA_OPTS && /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 10
+
+  # Phase 9: consumer-group lag → Prometheus (observability/kafka/lag-exporter.conf).
+  # Connects over the Kafka protocol (no JMX needed); exposes kafka_consumergroup_group_lag.
+  kafka-lag-exporter:
+    image: seglo/kafka-lag-exporter:0.7.0
+    container_name: fuseflow-kafka-lag-exporter
+    volumes:
+      - ./observability/kafka/lag-exporter.conf:/opt/docker/conf/application.conf:ro
+    ports:
+      - "9308:9308"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   kafdrop:
     image: obsidiandynamics/kafdrop:4.2.0
@@ -63,6 +82,64 @@ services:
       kafka:
         condition: service_healthy
 
+  # Phase 9: Prometheus metrics collection
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: fuseflow-prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/recording.yml:/etc/prometheus/recording.yml:ro
+      - ./observability/prometheus/alerting.yml:/etc/prometheus/alerting.yml:ro
+      - ./observability/prometheus/fleet-workers.json:/etc/prometheus/fleet-workers.json:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.enable-lifecycle'
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # Phase 9: Jaeger distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: fuseflow-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:16686/ > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Phase 9: Grafana dashboards
+  grafana:
+    image: grafana/grafana:11.6.16
+    container_name: fuseflow-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+
 volumes:
   postgres_data:
   kafka_data:
+  prometheus_data:
+  grafana_data:

@@ -160,12 +160,18 @@ ENG_B=$(eng_status 8084)
 echo
 echo "=== engine HA preflight ==="
 echo "  engine A (8082): $ENG_A   engine B (8084): $ENG_B"
-partitions=$(docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
-    --bootstrap-server localhost:9092 --describe --topic activity-results 2>/dev/null \
+partitions=$(docker compose exec -T kafka sh -c 'unset KAFKA_OPTS; /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic activity-results' 2>/dev/null \
     | grep -o 'PartitionCount: [0-9]*' | grep -o '[0-9]*' | head -1 || true)
 echo "  activity-results partitions: ${partitions:-?} (>= 4 needed for balanced HA consumption)"
-if [ "$ENG_A" != "UP" ] || [ "$ENG_B" != "UP" ]; then
-    echo "  WARN: engine HA is degraded (only one instance up) — the run will not exercise failover"
+if [ "$ENG_A" = "UP" ] && [ "$ENG_B" = "UP" ]; then
+    : # full HA stack — failover available
+elif [ "$ENG_A" = "UP" ] || [ "$ENG_B" = "UP" ]; then
+    # Single-engine setup (e.g. the Makefile's engine B is commented out) is a valid
+    # configuration — note it factually rather than calling it degraded.
+    echo "  NOTE: single engine instance active (A=$ENG_A B=$ENG_B) — failover disabled; run 'make services' for engine HA"
+    FAILOVER=""
+else
+    echo "  WARN: neither engine instance is up — executions cannot make progress"
     FAILOVER=""
 fi
 if [ -n "$FAILOVER" ] && [ "$FAILOVER" != "8082" ] && [ "$FAILOVER" != "8084" ]; then
@@ -177,6 +183,30 @@ if [ -n "$FAILOVER" ]; then
 fi
 
 # --------------------------------------------------------------- snapshot worker log baselines
+
+# Preflight: estimate how long the batch will take to drain and warn only if it clearly
+# exceeds the start timeout. The sample fleet drains ~3 tasks/s/slot (200ms activities +
+# pipeline overhead); a task sitting in the pool queue past the 60s start timeout gets
+# retried and eventually fails.
+if [ "$MODE" = "fleet" ]; then
+    TOTAL_TASKS_EST=$((FLEET_SIZE * PER_WORKFLOW * 5))  # ~5 tasks per workflow
+    FLEET_SLOTS=$(curl -s "$REG_URL/api/v1/workers" 2>/dev/null | python3 -c "
+import sys, json
+s = 0
+for w in json.load(sys.stdin):
+    if w['status'] == 'ONLINE':
+        s += w['concurrency']
+print(s)" 2>/dev/null || echo 0)
+    if [ "$FLEET_SLOTS" -gt 0 ]; then
+        EST_DRAIN_S=$((TOTAL_TASKS_EST / (FLEET_SLOTS * 3) + 1))
+        if [ "$EST_DRAIN_S" -gt 60 ]; then
+            echo "  WARN: estimated drain ~${EST_DRAIN_S}s for $TOTAL_TASKS_EST tasks across $FLEET_SLOTS worker slot(s)"
+            echo "  WARN: exceeds the 60s start timeout — tasks may be retried/fail (raise worker concurrency)"
+        else
+            echo "  OK: estimated drain ~${EST_DRAIN_S}s for $TOTAL_TASKS_EST tasks across $FLEET_SLOTS worker slot(s)"
+        fi
+    fi
+fi
 
 log_marker() {
     # Track both the single `make workers` worker (/tmp/fuseflow-workers.log) and the fleet
@@ -238,10 +268,19 @@ fetch_statuses() {  # reads "<idx> <id>" lines on stdin, prints "<idx> <id> <sta
     xargs -P 16 -n 2 bash -c 'one_status "$1" "$2"' _
 }
 
-in_flight() {  # count started executions that have not reached a terminal state yet
-    awk '{print "0 " $0}' "$IN_FLIGHT_FILE" \
-        | xargs -P 16 -n 2 bash -c 'one_status "$1" "$2"' _ \
-        | awk '$3 != "COMPLETED" && $3 != "FAILED" {n++} END {print n+0}'
+in_flight() {  # poll all tracked executions, prune the terminal ones from the file, and
+    # print the count still running. Pruning keeps each pass bounded by the concurrency cap
+    # (never the cumulative total) — without it the file grows to the whole batch and every
+    # pace() re-polls ~500 executions, which is the dominant cost of a fleet run.
+    local tmp="$IN_FLIGHT_FILE.tmp"
+    : > "$tmp"
+    if [ -s "$IN_FLIGHT_FILE" ]; then
+        awk '{print "0 " $0}' "$IN_FLIGHT_FILE" \
+            | fetch_statuses \
+            | awk '$3 != "COMPLETED" && $3 != "FAILED" {print $2}' >> "$tmp"
+    fi
+    mv "$tmp" "$IN_FLIGHT_FILE"
+    wc -l < "$IN_FLIGHT_FILE" | tr -d ' '
 }
 
 pace() {  # block until fewer than CONCURRENCY executions are in flight
@@ -251,20 +290,31 @@ pace() {  # block until fewer than CONCURRENCY executions are in flight
 }
 
 if [ "$MODE" = "fleet" ]; then
+    # Precompute fleet workflow ids for the parallel starter (one entry per workflow index).
+    FLEET_IDS="$WORK_DIR/fleet-ids.txt"
+    for i in $(seq 0 $((FLEET_SIZE - 1))); do
+        echo "$i ${WF_IDS[$i]}"
+    done > "$FLEET_IDS"
+    export ENG_URL RESP_DIR IN_FLIGHT_FILE FLEET_IDS
+    # Launch one execution POST (used in parallel via xargs below).
+    start_one() {  # $1=idx $2=wf-id $3=round -> POST + append id to in-flight file
+        local i=$1 wf=$2 round=$3 f id
+        f="$RESP_DIR/wf$i-$round.json"
+        curl -s -X POST "$ENG_URL/api/v1/executions" -H 'Content-Type: application/json' \
+            -d "{\"workflowId\": \"$wf\", \"input\": {\"batch\": $round}}" > "$f"
+        id=$(python3 -c "import sys, json; print(json.load(open('$f')).get('id',''))" 2>/dev/null || true)
+        [ -n "$id" ] && echo "$id" >> "$IN_FLIGHT_FILE"
+    }
+    export -f start_one
     for round in $(seq 1 "$PER_WORKFLOW"); do
-        # Pace ONCE per round (FLEET_SIZE starts), not before every single start: in_flight()
-        # re-polls the whole growing id set, so calling it 200× (once per execution) turns into
-        # ~40k HTTP calls and dominates wall time. Per-round pacing still caps in-flight at
-        # CONCURRENCY + FLEET_SIZE, which is enough to protect the pool queue.
-        pace
-        for i in $(seq 0 $((FLEET_SIZE - 1))); do
-            f="$RESP_DIR/wf$i-$round.json"
-            curl -s -X POST "$ENG_URL/api/v1/executions" -H 'Content-Type: application/json' \
-                -d "{\"workflowId\": \"${WF_IDS[$i]}\", \"input\": {\"batch\": $round}}" > "$f"
-            id=$(python3 -c "import sys, json; print(json.load(open('$f')).get('id',''))" 2>/dev/null || true)
-            [ -n "$id" ] && echo "$id" >> "$IN_FLIGHT_FILE"
-            STARTED=$((STARTED + 1))
-        done
+        # No pacing here: a fleet run starts its full batch as fast as possible — the 60s
+        # start timeout plus the fleet's drain rate makes the queue safe, and the old
+        # per-round pace() (polling the whole in-flight set) was the dominant cost of a fleet
+        # run (~2 min wall time for 500 executions). The preflight above warns if the fleet
+        # lacks capacity. The inner loop is parallel (FLEET_SIZE POSTs at once).
+        awk '{print $1, $2}' "$FLEET_IDS" \
+            | xargs -P 16 -n 2 bash -c 'start_one "$1" "$2" '"$round" _
+        STARTED=$((STARTED + FLEET_SIZE))
     done
 else
     for i in $(seq 1 "$COUNT"); do
@@ -282,7 +332,10 @@ echo "started $STARTED execution(s)"
 # ------------------------------------------------------------- engine HA failover (--failover)
 
 if [ -n "$FAILOVER" ]; then
-    pid=$(lsof -ti tcp:"$FAILOVER" 2>/dev/null || true)
+    # -sTCP:LISTEN: only the engine JVM actually listens on the port — Docker Desktop's
+    # backend holds established connections to it, so a bare `lsof -ti` would also kill
+    # com.docker.backend (taking Docker Desktop down with it).
+    pid=$(lsof -ti tcp:"$FAILOVER" -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$pid" ]; then
         echo "=== --failover: killing engine on port $FAILOVER (pid $pid) mid-run ==="
         kill "$pid"
@@ -330,13 +383,14 @@ if [ "$MODE" = "fleet" ]; then
 fi
 
 while :; do
+    # Only RUNNING resets per iteration: terminal executions are pruned from IDS_FILE, so
+    # COMPLETED/FAILED must ACCUMULATE across iterations (the old re-poll-everything loop
+    # could reset them each pass; the pruned loop cannot — the final wave would undercount).
     RUNNING=0
-    COMPLETED=0
-    FAILED=0
-    FAILED_IDS=()
-    if [ "$MODE" = "fleet" ]; then
-        for i in $(seq 0 $((FLEET_SIZE - 1))); do WF_COMPLETED[$i]=0; WF_FAILED[$i]=0; done
-    fi
+    # Prune on the fly: only executions still running are written back, so every later
+    # iteration polls the remaining set instead of the whole batch (~500 curls / iteration
+    # on a fleet run otherwise). Terminal counts accumulate across iterations.
+    : > "$IDS_FILE.tmp"
     while read -r idx id status; do
         case "$status" in
             COMPLETED)
@@ -345,9 +399,10 @@ while :; do
             FAILED)
                 FAILED=$((FAILED + 1)); FAILED_IDS+=("$id")
                 [ "$MODE" = "fleet" ] && WF_FAILED[$idx]=$((WF_FAILED[$idx] + 1));;
-            *) RUNNING=$((RUNNING + 1));;
+            *) RUNNING=$((RUNNING + 1)); echo "$idx $id" >> "$IDS_FILE.tmp";;
         esac
     done < <(fetch_statuses < "$IDS_FILE")
+    mv "$IDS_FILE.tmp" "$IDS_FILE"
     if [ "$RUNNING" -eq 0 ]; then
         break
     fi

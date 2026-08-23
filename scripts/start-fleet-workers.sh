@@ -30,7 +30,9 @@ fi
 # workers on ports this run never touches — they keep advertising + consuming the media pool
 # even when the config says 0 media.
 for port in $(seq 8100 8120); do
-    pid=$(lsof -ti tcp:$port 2>/dev/null || true)
+    # -sTCP:LISTEN: Docker Desktop's backend (com.docker.backend) holds established TCP
+    # connections to these ports — without the filter, `kill` would take Docker down too.
+    pid=$(lsof -ti tcp:$port -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null || true
     fi
@@ -106,9 +108,9 @@ done
 
 # Sanity: no leftover worker from a previous run should be alive outside this run's range.
 for port in $(seq $((8100 + IO + MEDIA)) 8120); do
-    if lsof -ti tcp:$port >/dev/null 2>&1; then
+    if lsof -ti tcp:$port -sTCP:LISTEN >/dev/null 2>&1; then
         echo "  WARN: stale worker still on port $port (previous run) — killing it"
-        kill "$(lsof -ti tcp:$port)" 2>/dev/null || true
+        kill "$(lsof -ti tcp:$port -sTCP:LISTEN)" 2>/dev/null || true
     fi
 done
 
@@ -120,5 +122,20 @@ workers = json.load(sys.stdin)
 for w in sorted(workers, key=lambda w: (w.get('poolName',''), w.get('id',''))):
     print('  pool=%-8s status=%-7s activities=%s' % (w.get('poolName'), w.get('status'), w.get('activities')))
 " 2>/dev/null || echo "  (registry not reachable — is the stack up?)"
+
+# Write the Prometheus file_sd targets for the ports launched in THIS run, so only live
+# fleet workers are scraped (no phantom DOWN targets / target-down alerts).
+SD_FILE="observability/prometheus/fleet-workers.json"
+{
+    echo "["
+    first=1
+    for port in $(seq 8100 $((8099 + IO + MEDIA))); do
+        [ "$first" -eq 1 ] || echo ","
+        echo "  {\"targets\": [\"host.docker.internal:$port\"], \"labels\": {\"service\": \"fleet-workers\"}}"
+        first=0
+    done
+    echo "]"
+} > "$SD_FILE"
+echo "  Prometheus fleet scrape targets -> $SD_FILE"
 echo
 echo "Fleet live. Run: scripts/demo-scale.sh --fleet 10 20 32  (add --failover to kill an engine mid-run)"

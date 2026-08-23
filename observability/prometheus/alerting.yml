@@ -1,0 +1,341 @@
+# FuseFlow Alerting Rules (Phase 9 Observability)
+# Loaded by Prometheus via rule_files in prometheus.yml
+
+groups:
+  # ────────────────────────────────────────────────────────────────
+  # Workflow Engine Alerts
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_workflow_engine
+    rules:
+      # High workflow failure rate (> 5% over 5 minutes)
+      - alert: FuseFlowHighWorkflowFailureRate
+        expr: |
+          (
+            fuseflow_workflow_failed:rate5m
+            / (fuseflow_workflow_started:rate5m > 0)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: workflow-engine
+        annotations:
+          summary: "High workflow failure rate (> 5%)"
+          description: "Workflow failure rate is {{ $value | humanizePercentage }} over the last 5 minutes (threshold: 5%)."
+          runbook: "Check dead-letter topic, inspect failed workflows via /api/v1/dead-letters"
+
+      # Outbox backpressure (pending entries growing)
+      - alert: FuseFlowOutboxBackpressure
+        expr: max by (job) (fuseflow_outbox_pending) > 200
+        for: 2m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "Outbox queue backpressure detected"
+          description: "Pending outbox entries: {{ $value }} (threshold: 200). Dispatch pipeline may be falling behind."
+
+      # Outbox critical backpressure
+      - alert: FuseFlowOutboxCriticalBackpressure
+        expr: max by (job) (fuseflow_outbox_pending) > 1000
+        for: 1m
+        labels:
+          severity: critical
+          service: workflow-engine
+        annotations:
+          summary: "Outbox queue critically overloaded"
+          description: "Pending outbox entries: {{ $value }} (threshold: 1000). Tasks may be stuck."
+
+      # No active workers
+      - alert: FuseFlowNoActiveWorkers
+        expr: max by (job) (fuseflow_workers_active) < 1
+        for: 1m
+        labels:
+          severity: critical
+          service: workflow-engine
+        annotations:
+          summary: "No active workers available"
+          description: "Worker count has dropped to 0. All scheduled activities will time out."
+
+      # Worker fleet shrinkage (> 30% drop in 5 minutes)
+      - alert: FuseFlowWorkerFleetShrinkage
+        expr: |
+          (
+            max by (job) (fuseflow_workers_active)
+            / max by (job) (fuseflow_workers_active offset 5m)
+          ) < 0.7
+          and max by (job) (fuseflow_workers_active offset 5m) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "Worker fleet shrinking rapidly"
+          description: "Worker count dropped by {{ $value | humanizePercentage }} in 5 minutes."
+
+      # High activity unroutable rate
+      - alert: FuseFlowHighUnroutableRate
+        expr: sum by (job) (fuseflow_activity_unroutable:rate5m) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "High unroutable activity rate"
+          description: "{{ $value }} activities/second cannot be routed to any worker pool."
+
+      # Dispatch failure rate
+      - alert: FuseFlowDispatchFailure
+        expr: |
+          (
+            sum by (job) (fuseflow_dispatch_failed:rate5m)
+            / (sum by (job) (fuseflow_dispatch_attempted:rate5m) > 0)
+          ) > 0.01
+        for: 3m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "Dispatch failure rate elevated"
+          description: "Dispatch failure rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      # Activity timeout spike
+      - alert: FuseFlowActivityTimeoutSpike
+        expr: sum by (job) (fuseflow_activity_timed_out:rate5m) > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "Activity timeout spike"
+          description: "{{ $value }} activities timing out per second. Check worker health."
+
+      # Dead-letter activity spike
+      - alert: FuseFlowDeadLetterSpike
+        expr: sum by (job) (fuseflow_activity_dead_lettered:rate5m) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: workflow-engine
+        annotations:
+          summary: "Dead-lettered activity rate elevated"
+          description: "{{ $value }} activities/sec being dead-lettered. Check the dead-letter topic."
+
+  # ────────────────────────────────────────────────────────────────
+  # SLO / Error Budget Alerts (Multiwindow, Multi-Burn-Rate)
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_slo
+    rules:
+      # SLO: 99.9% availability — fast burn (1h window, 14.4x budget consumed)
+      # Both 5m and 30m error ratios must exceed the threshold, confirming a sustained spike.
+      - alert: FuseFlowSLOFastBurn
+        expr: |
+          fuseflow_workflow_error_ratio:ratio5m > 0.0144
+          and fuseflow_workflow_error_ratio:ratio30m > 0.0144
+        for: 2m
+        labels:
+          severity: critical
+          service: workflow-engine
+          slo: availability
+        annotations:
+          summary: "SLO fast burn — error budget being consumed rapidly"
+          description: "Error ratio 5m={{ $value | humanizePercentage }} > 1.44%, 30m ratio also > 1.44%. Budget draining at ~14.4x."
+
+      # SLO: 99.9% availability — slow burn (6h window, 6x budget consumed)
+      - alert: FuseFlowSLOSlowBurn
+        expr: |
+          fuseflow_workflow_error_ratio:ratio5m > 0.006
+          and fuseflow_workflow_error_ratio:ratio30m > 0.006
+        for: 15m
+        labels:
+          severity: warning
+          service: workflow-engine
+          slo: availability
+        annotations:
+          summary: "SLO slow burn — error budget trending toward exhaustion"
+          description: "Error ratio 5m={{ $value | humanizePercentage }} > 0.6%, 30m ratio also > 0.6%. Budget draining at ~6x."
+
+      # Latency SLO: p99 workflow duration > 500ms
+      - alert: FuseFlowLatencySLOBreach
+        expr: max(fuseflow_workflow_duration_seconds{quantile="0.99"}) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: workflow-engine
+          slo: latency
+        annotations:
+          summary: "Workflow p99 latency exceeding 500ms SLO"
+          description: "p99 workflow duration is {{ $value | humanizeDuration }} (SLO: 500ms)."
+
+  # ────────────────────────────────────────────────────────────────
+  # JVM / Memory Alerts
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_jvm
+    rules:
+      # Heap memory usage > 80%
+      - alert: FuseFlowHighHeapUsage
+        expr: |
+          (
+            jvm_memory_used_bytes{area="heap"}
+            / jvm_memory_max_bytes{area="heap"}
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "High JVM heap usage on {{ $labels.job }}"
+          description: "Heap usage is {{ $value | humanizePercentage }}. Risk of GC pressure."
+
+      # Heap memory usage > 90% (critical)
+      - alert: FuseFlowCriticalHeapUsage
+        expr: |
+          (
+            jvm_memory_used_bytes{area="heap"}
+            / jvm_memory_max_bytes{area="heap"}
+          ) > 0.9
+        for: 2m
+        labels:
+          severity: critical
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "Critical JVM heap usage on {{ $labels.job }}"
+          description: "Heap usage is {{ $value | humanizePercentage }}. OOM risk."
+
+      # GC pause duration > 500ms
+      - alert: FuseFlowGCPauseHigh
+        expr: |
+          rate(jvm_gc_pause_seconds_sum[5m])
+          / rate(jvm_gc_pause_seconds_count[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "High GC pause duration on {{ $labels.job }}"
+          description: "Average GC pause is {{ $value | humanizeDuration }}."
+
+      # Thread count > 500
+      - alert: FuseFlowHighThreadCount
+        expr: jvm_threads_live_threads > 500
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "High thread count on {{ $labels.job }}"
+          description: "{{ $value }} live threads. Possible thread pool leak."
+
+  # ────────────────────────────────────────────────────────────────
+  # HikariCP / Database Alerts (built-in Micrometer hikaricp_* metrics)
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_database
+    rules:
+      # Connection pool exhaustion (all connections used)
+      - alert: FuseFlowDBPoolExhausted
+        expr: |
+          sum by (job) (hikaricp_connections_active)
+          / sum by (job) (hikaricp_connections_max) > 0.9
+        for: 2m
+        labels:
+          severity: critical
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "DB connection pool nearly exhausted on {{ $labels.job }}"
+          description: "Pool utilization is {{ $value | humanizePercentage }}. Requests may start waiting."
+
+      # Connection pool timeout (requests waiting for connection)
+      - alert: FuseFlowDBPoolTimeout
+        expr: sum by (job) (hikaricp_connections_pending) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "DB connection pool contention on {{ $labels.job }}"
+          description: "{{ $value }} requests waiting for a database connection."
+
+      # Connection pool utilization high (> 80%)
+      - alert: FuseFlowDBPoolHighUtilization
+        expr: |
+          sum by (job) (hikaricp_connections_active)
+          / sum by (job) (hikaricp_connections_max) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "DB connection pool utilization high on {{ $labels.job }}"
+          description: "Pool utilization is {{ $value | humanizePercentage }}. Approaching capacity."
+
+  # ────────────────────────────────────────────────────────────────
+  # Kafka Alerts
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_kafka
+    rules:
+      # Consumer group lag high (from seglo/kafka-lag-exporter)
+      - alert: FuseFlowKafkaConsumerLagHigh
+        expr: max by (group, topic) (kafka_consumergroup_group_lag) > 10000
+        for: 5m
+        labels:
+          severity: warning
+          service: kafka
+        annotations:
+          summary: "Kafka consumer group {{ $labels.group }} lag high on topic {{ $labels.topic }}"
+          description: "Consumer lag is {{ $value }} messages."
+
+      # Consumer group lag critical
+      - alert: FuseFlowKafkaConsumerLagCritical
+        expr: max by (group, topic) (kafka_consumergroup_group_lag) > 100000
+        for: 3m
+        labels:
+          severity: critical
+          service: kafka
+        annotations:
+          summary: "Kafka consumer group {{ $labels.group }} lag critical on topic {{ $labels.topic }}"
+          description: "Consumer lag is {{ $value }} messages. Backpressure imminent."
+
+      # Consumer group not progressing (lag growing, not just residual lag) — fires only when
+      # the lag is consistently increasing, so idle-but-healthy groups with leftover lag don't
+      # trigger it.
+      - alert: FuseFlowKafkaConsumerNotProgressing
+        expr: deriv(kafka_consumergroup_group_lag[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: kafka
+        annotations:
+          summary: "Kafka consumer group {{ $labels.group }} lag growing on topic {{ $labels.topic }}"
+          description: "Consumer lag is increasing by {{ $value }}/s over 10 minutes. The consumer may be down or stuck."
+
+      # Broker-level: under-replicated partitions (from JMX exporter)
+      - alert: FuseFlowKafkaUnderReplicatedPartitions
+        expr: kafka_server_replicamanager_under_replicated_partitions > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: kafka
+        annotations:
+          summary: "Kafka under-replicated partitions"
+          description: "{{ $value }} partitions are under-replicated. Broker health risk."
+
+      # Broker-level: no active controller
+      - alert: FuseFlowKafkaNoActiveController
+        expr: kafka_server_active_controller_count == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: kafka
+        annotations:
+          summary: "Kafka has no active controller"
+          description: "No active controller in the Kafka cluster. Leadership election may be failing."
+
+      # Prometheus target down
+      - alert: FuseFlowPrometheusTargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: monitoring
+        annotations:
+          summary: "Prometheus target {{ $labels.instance }} is down"
+          description: "Cannot scrape metrics from {{ $labels.job }} at {{ $labels.instance }}."

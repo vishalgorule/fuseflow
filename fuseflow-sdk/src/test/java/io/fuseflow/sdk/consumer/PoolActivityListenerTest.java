@@ -1,6 +1,7 @@
 package io.fuseflow.sdk.consumer;
 
 import io.fuseflow.common.messaging.ActivityTask;
+import io.fuseflow.sdk.TestProviders;
 import io.fuseflow.sdk.runtime.ActivityRegistry;
 import io.fuseflow.sdk.runtime.FuseFlowWorker;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -26,7 +27,7 @@ class PoolActivityListenerTest {
     private final WorkflowControlCache controlCache = new WorkflowControlCache(Duration.ofMinutes(10));
     private final ActivityDedupCache dedupCache = new ActivityDedupCache();
     private final PoolActivityListener listener =
-            new PoolActivityListener(objectMapper, registry, worker, controlCache, dedupCache);
+            new PoolActivityListener(objectMapper, registry, worker, controlCache, dedupCache, TestProviders.emptyProvider(), TestProviders.emptyProvider());
 
     private static ConsumerRecord<String, String> record(String json) {
         return new ConsumerRecord<>("fuseflow-pool.default", 0, 0L, "b", json);

@@ -4,10 +4,14 @@ import io.fuseflow.common.correlation.CorrelationId;
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.sdk.runtime.ActivityRegistry;
 import io.fuseflow.sdk.runtime.FuseFlowWorker;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.annotation.KafkaListener;
 import tools.jackson.databind.ObjectMapper;
 
@@ -37,17 +41,23 @@ public class PoolActivityListener {
     private final FuseFlowWorker worker;
     private final WorkflowControlCache controlCache;
     private final ActivityDedupCache dedupCache;
+    private final ObjectProvider<Tracer> tracerProvider;
+    private final ObjectProvider<Propagator> propagatorProvider;
 
     public PoolActivityListener(ObjectMapper objectMapper,
                                 ActivityRegistry activityRegistry,
                                 FuseFlowWorker worker,
                                 WorkflowControlCache controlCache,
-                                ActivityDedupCache dedupCache) {
+                                ActivityDedupCache dedupCache,
+                                ObjectProvider<Tracer> tracerProvider,
+                                ObjectProvider<Propagator> propagatorProvider) {
         this.objectMapper = objectMapper;
         this.activityRegistry = activityRegistry;
         this.worker = worker;
         this.controlCache = controlCache;
         this.dedupCache = dedupCache;
+        this.tracerProvider = tracerProvider;
+        this.propagatorProvider = propagatorProvider;
     }
 
     @KafkaListener(topics = "${fuseflow.queue.pool-prefix:fuseflow-pool}.${fuseflow.worker.pool:default}",
@@ -62,6 +72,7 @@ public class PoolActivityListener {
             concurrency = "${fuseflow.worker.concurrency:1}")
     public void onDispatch(ConsumerRecord<String, String> record) {
         applyCorrelation(record);
+        Span span = null;
         try {
             ActivityTask task = objectMapper.readValue(record.value(), ActivityTask.class);
             if (!activityRegistry.supports(task.activityName())) {
@@ -77,13 +88,46 @@ public class PoolActivityListener {
             if (dedupCache.isDuplicate(task.executionId(), task.taskId(), task.attempt())) {
                 return;
             }
-            worker.execute(task, () -> dedupCache.markProcessed(task.executionId(), task.taskId(), task.attempt()));
+            // Phase 9: continue the engine's dispatch trace — extract the W3C traceparent the
+            // engine injected and wrap the execution in a child span. No-op without tracing.
+            span = startChildSpan(record, task);
+            Tracer tracer = tracerProvider.getIfAvailable();
+            if (span != null && tracer != null) {
+                try (Tracer.SpanInScope scope = tracer.withSpan(span)) {
+                    worker.execute(task, () -> dedupCache.markProcessed(task.executionId(), task.taskId(), task.attempt()));
+                }
+            } else {
+                worker.execute(task, () -> dedupCache.markProcessed(task.executionId(), task.taskId(), task.attempt()));
+            }
         } catch (Exception ex) {
             log.error("Failed to process dispatch '{}': {}", record.value(), ex.getMessage(), ex);
         } finally {
+            if (span != null) {
+                span.end();
+            }
             CorrelationId.clear();
             MDC.remove(CorrelationId.MDC_KEY);
         }
+    }
+
+    /** Extracts the engine's trace context from the record headers and starts a child span. */
+    private Span startChildSpan(ConsumerRecord<String, String> record, ActivityTask task) {
+        Tracer tracer = tracerProvider.getIfAvailable();
+        Propagator propagator = propagatorProvider.getIfAvailable();
+        if (tracer == null || propagator == null) {
+            return null;
+        }
+        Span.Builder builder = propagator.extract(record.headers(),
+                (headers, key) -> {
+                    var header = headers.lastHeader(key);
+                    return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
+                });
+        return builder == null ? null : builder.name("fuseflow.worker.execute")
+                .tag("activity", task.activityName())
+                .tag("executionId", task.executionId().toString())
+                .tag("taskId", task.taskId())
+                .tag("attempt", String.valueOf(task.attempt()))
+                .start();
     }
 
     /**

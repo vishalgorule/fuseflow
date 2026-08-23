@@ -8,6 +8,7 @@ import io.fuseflow.engine.ha.EngineShards;
 import io.fuseflow.engine.dto.ExecutionRequest;
 import io.fuseflow.engine.dto.ExecutionResponse;
 import io.fuseflow.engine.messaging.WorkflowEventPublisher;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.DagModel;
 import io.fuseflow.engine.model.WorkflowEvent;
@@ -18,6 +19,7 @@ import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
@@ -52,6 +54,7 @@ public class ExecutionManager {
     private final WorkflowEventPublisher workflowEventPublisher;
     private final EngineShards engineShards;
     private final ExecutionRecovery executionRecovery;
+    private final EngineMetrics metrics;
     private final ObjectMapper objectMapper;
 
     public ExecutionManager(WorkflowDefinitionReader definitionReader,
@@ -62,6 +65,7 @@ public class ExecutionManager {
                             WorkflowEventPublisher workflowEventPublisher,
                             EngineShards engineShards,
                             ExecutionRecovery executionRecovery,
+                            EngineMetrics metrics,
                             ObjectMapper objectMapper) {
         this.definitionReader = definitionReader;
         this.executionRepository = executionRepository;
@@ -71,9 +75,11 @@ public class ExecutionManager {
         this.workflowEventPublisher = workflowEventPublisher;
         this.engineShards = engineShards;
         this.executionRecovery = executionRecovery;
+        this.metrics = metrics;
         this.objectMapper = objectMapper;
     }
 
+    @Observed(name = "fuseflow.engine.start")
     @Transactional
     public ExecutionResponse start(ExecutionRequest request) {
         if (request.workflowId() == null) {
@@ -107,6 +113,10 @@ public class ExecutionManager {
                 .filter(a -> a.remainingDependencies() == 0)
                 .toList();
         scheduler.schedule(executionId, roots, input);
+        
+        // Phase 9: record metrics
+        metrics.workflowStarted(definition.name());
+        metrics.recordWorkflowActivityCount(definition.name(), tasks.size());
 
         return toResponse(executionRepository.findById(executionId).orElseThrow(),
                 activityRepository.findForExecution(executionId));
@@ -158,6 +168,7 @@ public class ExecutionManager {
         if (executionRepository.markPaused(id, execution.version())) {
             eventStore.append(id, "WorkflowPaused", Map.of());
             workflowEventPublisher.publish(id, "WorkflowPaused", Map.of());
+            metrics.workflowPaused(execution.workflowName());
             log.info("Execution {} paused", id);
         }
         return get(id);
@@ -178,6 +189,7 @@ public class ExecutionManager {
         if (executionRepository.markResumed(id, execution.version())) {
             eventStore.append(id, "WorkflowResumed", Map.of());
             workflowEventPublisher.publish(id, "WorkflowResumed", Map.of());
+            metrics.workflowResumed(execution.workflowName());
             log.info("Execution {} resumed — re-driving from durable state", id);
             executionRecovery.redrive(execution);
         }
@@ -199,6 +211,7 @@ public class ExecutionManager {
         if (executionRepository.markCancelled(id, execution.version())) {
             eventStore.append(id, "WorkflowCancelled", Map.of());
             workflowEventPublisher.publish(id, "WorkflowCancelled", Map.of());
+            metrics.workflowCancelled(execution.workflowName());
             log.info("Execution {} cancelled", id);
         }
         return get(id);

@@ -2,6 +2,7 @@ package io.fuseflow.engine.retry;
 
 import io.fuseflow.engine.config.ReliabilityProperties;
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -31,9 +32,10 @@ class TimeoutManagerTest {
     private final WorkflowExecutionRepository executionRepository = mock(WorkflowExecutionRepository.class);
     private final RetryManager retryManager = mock(RetryManager.class);
     private final ReliabilityProperties properties = new ReliabilityProperties();
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
 
     private final TimeoutManager timeoutManager =
-            new TimeoutManager(activityRepository, executionRepository, retryManager, properties);
+            new TimeoutManager(activityRepository, executionRepository, retryManager, properties, metrics);
 
     /** Default: the execution behind every timeout candidate is RUNNING (Phase 8 gate passes). */
     private void stubRunningExecutions() {

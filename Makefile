@@ -42,8 +42,8 @@ services: build ## Build and run the platform services with engine HA (requires 
 	@# (plain nohup is not enough — see the fleet-workers launcher).
 	@./scripts/daemon-java.sh fuseflow-api-gateway/target/fuseflow-api-gateway-*.jar /tmp/fuseflow-gateway.log
 	@./scripts/daemon-java.sh fuseflow-definition-service/target/fuseflow-definition-service-*.jar /tmp/fuseflow-definition.log
-	@./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine.log FUSEFLOW_ENGINE_OWNED_SHARDS=0-3 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-a
-	@./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine-2.log SERVER_PORT=8084 FUSEFLOW_ENGINE_OWNED_SHARDS=4-7 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-b
+	@./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine.log FUSEFLOW_ENGINE_OWNED_SHARDS=0-3 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=20 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=20 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-a
+# 	@./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine-2.log SERVER_PORT=8084 FUSEFLOW_ENGINE_OWNED_SHARDS=4-7 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=4 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-b
 	@./scripts/daemon-java.sh fuseflow-worker-registry/target/fuseflow-worker-registry-*.jar /tmp/fuseflow-registry.log
 
 workers: build ## Build and run the sample SDK workers (port 8090; requires engine + registry up)
@@ -52,21 +52,22 @@ workers: build ## Build and run the sample SDK workers (port 8090; requires engi
 	@./scripts/daemon-java.sh fuseflow-sample-workers/target/fuseflow-sample-workers-*.jar /tmp/fuseflow-workers.log
 
 stop-workers: ## Stop the locally running sample workers
-	@pid=$$(lsof -ti tcp:8090 2>/dev/null); \
+	@pid=$$(lsof -ti tcp:8090 -sTCP:LISTEN 2>/dev/null); \
 	if [ -n "$$pid" ]; then kill $$pid && echo "stopped sample-workers ($$pid)"; fi
 
 workers-fleet: build ## Build + launch the io pool fleet (8 io + 0 media workers, concurrency 8, ports 8100-8107)
-	@scripts/start-fleet-workers.sh 8 0 8
+	@scripts/start-fleet-workers.sh 1 0 100
 
 stop-fleet-workers: ## Stop the fleet workers (ports 8100+)
 	@for port in $$(seq 8100 8120); do \
-		pid=$$(lsof -ti tcp:$$port 2>/dev/null); \
+		pid=$$(lsof -ti tcp:$$port -sTCP:LISTEN 2>/dev/null); \
 		if [ -n "$$pid" ]; then kill $$pid && echo "stopped fleet worker on $$port ($$pid)"; fi; \
 	done
+	@printf '[{"targets": []}]\n' > observability/prometheus/fleet-workers.json && echo "cleared Prometheus fleet scrape targets"
 
 stop-services: ## Stop locally running services
 	@for p in gateway:8080 definition:8081 engine:8082 engine-2:8084 registry:8083; do \
 		name=$${p%%:*}; port=$${p##*:}; \
-		pid=$$(lsof -ti tcp:$$port 2>/dev/null); \
+		pid=$$(lsof -ti tcp:$$port -sTCP:LISTEN 2>/dev/null); \
 		if [ -n "$$pid" ]; then kill $$pid && echo "stopped $$name ($$pid)"; fi; \
 	done

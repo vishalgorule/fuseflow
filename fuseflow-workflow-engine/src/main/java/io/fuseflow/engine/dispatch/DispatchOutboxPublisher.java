@@ -2,6 +2,7 @@ package io.fuseflow.engine.dispatch;
 
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.config.ReliabilityProperties;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.registry.PoolRoutingTable;
 import io.fuseflow.engine.repository.DispatchOutboxRepository;
 import io.fuseflow.engine.repository.EventStore;
@@ -10,9 +11,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * The other half of the dispatch outbox (post-Phase 7 hardening): publishes PENDING outbox
@@ -41,33 +44,53 @@ public class DispatchOutboxPublisher {
     private final TaskDispatcher taskDispatcher;
     private final EventStore eventStore;
     private final ReliabilityProperties properties;
+    private final EngineMetrics metrics;
 
     public DispatchOutboxPublisher(DispatchOutboxRepository outboxRepository,
                                    PoolRoutingTable routingTable,
                                    TaskDispatcher taskDispatcher,
                                    EventStore eventStore,
-                                   ReliabilityProperties properties) {
+                                   ReliabilityProperties properties,
+                                   EngineMetrics metrics) {
         this.outboxRepository = outboxRepository;
         this.routingTable = routingTable;
         this.taskDispatcher = taskDispatcher;
         this.eventStore = eventStore;
         this.properties = properties;
+        this.metrics = metrics;
     }
+
+    /** Flush size for the batched PUBLISHED marks — bounds the SQL IN-list per statement. */
+    private static final int MARK_BATCH = 100;
 
     @Scheduled(fixedDelayString = "${fuseflow.engine.outbox.poll-interval:1s}")
     public void publishPending() {
         List<DispatchOutboxRepository.Entry> pending =
                 outboxRepository.findPending(properties.getOutbox().getPollBatchSize());
+        metrics.setPendingOutboxEntries(pending.size());
+        metrics.setMaxPendingOutboxAgeSeconds(outboxRepository.maxPendingAgeSeconds());
+        List<UUID> published = new ArrayList<>(Math.min(pending.size(), MARK_BATCH));
         for (DispatchOutboxRepository.Entry entry : pending) {
             if (routingTable.resolveTopic(entry.activityName(), entry.taskId()).isEmpty()) {
                 markUnroutable(entry);
                 continue;
             }
+            // Dispatch outcome counters (attempted/succeeded/failed) are recorded inside the
+            // TaskDispatcher — the outbox only decides *that* a dispatch is attempted.
             taskDispatcher.dispatch(new ActivityTask(entry.workflowExecutionId(), entry.taskId(),
                     entry.activityName(), entry.input(), entry.attempt()));
-            outboxRepository.markPublished(entry.id());
+            // Mark published in bulk (one UPDATE per chunk, not one per row): the dispatcher is
+            // single-threaded, so per-row synchronous DB round trips were the throughput cap.
+            published.add(entry.id());
+            if (published.size() >= MARK_BATCH) {
+                outboxRepository.markPublishedBatch(published);
+                published.clear();
+            }
             log.debug("Published outbox dispatch of activity {} for execution {} (attempt {})",
                     entry.activityName(), entry.workflowExecutionId(), entry.attempt());
+        }
+        if (!published.isEmpty()) {
+            outboxRepository.markPublishedBatch(published);
         }
     }
 

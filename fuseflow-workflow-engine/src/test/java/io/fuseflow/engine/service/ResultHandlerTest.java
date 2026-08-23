@@ -3,6 +3,7 @@ package io.fuseflow.engine.service;
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.dispatch.ActivityResult;
 import io.fuseflow.engine.messaging.WorkflowEventPublisher;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -41,10 +42,11 @@ class ResultHandlerTest {
     private final Scheduler scheduler = mock(Scheduler.class);
     private final WorkflowEventPublisher workflowEventPublisher = mock(WorkflowEventPublisher.class);
     private final RetryManager retryManager = mock(RetryManager.class);
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
     private final WorkflowFinalizer workflowFinalizer = new WorkflowFinalizer(executionRepository,
-            eventStore, workflowEventPublisher);
+            eventStore, workflowEventPublisher, metrics);
     private final ResultHandler resultHandler = new ResultHandler(activityRepository, executionRepository,
-            eventStore, scheduler, retryManager, workflowFinalizer, new ObjectMapper());
+            eventStore, scheduler, retryManager, workflowFinalizer, metrics, new ObjectMapper());
 
     private static ActivityExecution activity(String taskId, ActivityStatus status, long version) {
         Instant now = Instant.now();

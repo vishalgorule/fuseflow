@@ -47,7 +47,34 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.75,0.95,0.99
+  # Phase 9: OpenTelemetry tracing — worker spans continue the engine's dispatch trace
+  # (traceparent propagated through Kafka by the SDK) and land in Jaeger via OTLP.
+  opentelemetry:
+    enabled: true
+    tracing:
+      sampler: ALWAYS_ON
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+  tracing:
+    enabled: true
+  otlp:
+    metrics:
+      export:
+        # The local Jaeger receiver only accepts traces — don't push OTLP metrics at it.
+        enabled: false
+  # JVM metrics are auto-exposed by Micrometer + Actuator
+  metrics.tags.application: fuseflow-sample-workers

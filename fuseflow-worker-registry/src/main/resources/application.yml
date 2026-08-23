@@ -54,7 +54,34 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.75,0.95,0.99
+  # HikariCP metrics: expose connection pool health via Micrometer
+  metrics.tags.application: fuseflow-worker-registry
+
+# Phase 9: OpenTelemetry tracing
+otel:
+  service:
+    name: fuseflow-worker-registry
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+
+# Phase 9: Structured JSON logging with correlation IDs
+logging:
+  level:
+    io.fuseflow: INFO
+    org.springframework.web: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - correlationId=%X{correlationId} - %msg%n"

@@ -2,6 +2,7 @@ package io.fuseflow.engine.retry;
 
 import io.fuseflow.engine.config.ReliabilityProperties;
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
@@ -46,15 +47,18 @@ public class TimeoutManager {
     private final WorkflowExecutionRepository executionRepository;
     private final RetryManager retryManager;
     private final ReliabilityProperties properties;
+    private final EngineMetrics metrics;
 
     public TimeoutManager(ActivityExecutionRepository activityRepository,
                           WorkflowExecutionRepository executionRepository,
                           RetryManager retryManager,
-                          ReliabilityProperties properties) {
+                          ReliabilityProperties properties,
+                          EngineMetrics metrics) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.retryManager = retryManager;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${fuseflow.engine.poll-interval:5s}")
@@ -63,27 +67,31 @@ public class TimeoutManager {
         Instant startCutoff = Instant.now().minus(startTimeout);
         // Phase 8: paused/terminal executions are exempt from timeouts — a paused execution's
         // in-flight activities must not be killed by the clock; resume re-drives them.
-        List<ActivityExecution> startTimeouts = runningOnly(activityRepository.findStartTimeouts(startCutoff));
-        for (ActivityExecution activity : startTimeouts) {
+        List<Candidate> startTimeouts = runningOnly(activityRepository.findStartTimeouts(startCutoff));
+        for (Candidate candidate : startTimeouts) {
+            ActivityExecution activity = candidate.activity();
             log.warn("Activity {} of execution {} never started within {} — treating as failed attempt {}",
                     activity.taskId(), activity.workflowExecutionId(), startTimeout, activity.attempt());
+            metrics.activityTimedOut(candidate.workflowName(), "start");
             retryManager.onActivityFailed(failure(activity, "start timeout after " + startTimeout.toSeconds() + "s"));
         }
 
         Duration executionTimeout = properties.getTimeout().getExecution();
         Instant executionCutoff = Instant.now().minus(executionTimeout);
-        List<ActivityExecution> executionTimeouts = runningOnly(activityRepository.findExecutionTimeouts(executionCutoff));
-        for (ActivityExecution activity : executionTimeouts) {
+        List<Candidate> executionTimeouts = runningOnly(activityRepository.findExecutionTimeouts(executionCutoff));
+        for (Candidate candidate : executionTimeouts) {
+            ActivityExecution activity = candidate.activity();
             log.warn("Activity {} of execution {} produced no result within {} — treating as failed attempt {}",
                     activity.taskId(), activity.workflowExecutionId(), executionTimeout, activity.attempt());
+            metrics.activityTimedOut(candidate.workflowName(), "execution");
             retryManager.onActivityFailed(failure(activity, "execution timeout after " + executionTimeout.toSeconds() + "s"));
         }
     }
 
     /** Filters timeout candidates to executions still RUNNING (one batched status read). */
-    private List<ActivityExecution> runningOnly(List<ActivityExecution> candidates) {
+    private List<Candidate> runningOnly(List<ActivityExecution> candidates) {
         if (candidates.isEmpty()) {
-            return candidates;
+            return candidates.stream().map(a -> new Candidate(a, "unknown")).toList();
         }
         List<UUID> executionIds = candidates.stream()
                 .map(ActivityExecution::workflowExecutionId)
@@ -92,11 +100,19 @@ public class TimeoutManager {
         Map<UUID, WorkflowExecution> executions = executionRepository.findByIds(executionIds).stream()
                 .collect(Collectors.toMap(WorkflowExecution::id, Function.identity()));
         return candidates.stream()
-                .filter(activity -> {
+                .map(activity -> {
                     WorkflowExecution execution = executions.get(activity.workflowExecutionId());
-                    return execution != null && execution.status() == WorkflowStatus.RUNNING;
+                    if (execution == null || execution.status() != WorkflowStatus.RUNNING) {
+                        return null;
+                    }
+                    return new Candidate(activity, execution.workflowName());
                 })
+                .filter(java.util.Objects::nonNull)
                 .toList();
+    }
+
+    /** A timeout candidate carrying the workflow name for the metrics tag. */
+    private record Candidate(ActivityExecution activity, String workflowName) {
     }
 
     private static ActivityResult failure(ActivityExecution activity, String error) {

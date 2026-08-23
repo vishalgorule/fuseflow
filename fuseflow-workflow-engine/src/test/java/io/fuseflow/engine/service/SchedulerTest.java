@@ -1,5 +1,6 @@
 package io.fuseflow.engine.service;
 
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -37,9 +38,10 @@ class SchedulerTest {
     private final EventStore eventStore = mock(EventStore.class);
     private final PoolRoutingTable routingTable = mock(PoolRoutingTable.class);
     private final DispatchOutboxRepository outboxRepository = mock(DispatchOutboxRepository.class);
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
 
     private final Scheduler scheduler = new Scheduler(activityRepository, executionRepository, eventStore,
-            routingTable, outboxRepository);
+            routingTable, outboxRepository, metrics);
 
     @BeforeEach
     void setUp() {

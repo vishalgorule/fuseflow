@@ -6,6 +6,12 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/fuseflow?currentSchema=engine}
     username: ${SPRING_DATASOURCE_USERNAME:fuseflow}
     password: ${SPRING_DATASOURCE_PASSWORD:fuseflow}
+    hikari:
+      # The engine's Kafka listeners (activity-results concurrency) drive DB-bound result
+      # transactions — a pool far smaller than the listener concurrency makes consumer
+      # threads block on connection acquisition (stall → activity start-timeout retries).
+      # Keep this >= the listener concurrency.
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:30}
 
   flyway:
     enabled: true
@@ -30,6 +36,11 @@ spring:
       # Phase 5 engine HA: ≥ number of engine instances so every instance can hold partitions.
       # activity-results must have ≥ that many partitions (FUSEFLOW_KAFKA_TOPICS_PARTITIONS).
       concurrency: ${FUSEFLOW_ENGINE_LISTENER_CONCURRENCY:1}
+      # Observability: spring_kafka_listener_seconds (listener processing time panels).
+      observation-enabled: true
+    template:
+      # Observability: spring_kafka_template_seconds (send duration panels).
+      observation-enabled: true
 
   task:
     scheduling:
@@ -103,7 +114,46 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.75,0.95,0.99
+      slo:
+        http.server.requests: 100ms,500ms,1s
+
+# Phase 9: OpenTelemetry tracing — Boot auto-configures the OTel SDK + Micrometer tracing
+# bridge (spring-boot-starter-opentelemetry). @Observed spans land in Jaeger via OTLP.
+  opentelemetry:
+    enabled: true
+    tracing:
+      sampler: ALWAYS_ON
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+  tracing:
+    enabled: true
+  otlp:
+    metrics:
+      export:
+        # The local Jaeger receiver only accepts traces — don't push OTLP metrics at it.
+        enabled: false
+  observations:
+    annotations:
+      enabled: true
+
+# Phase 9: Structured JSON logging with correlation IDs
+logging:
+  level:
+    io.fuseflow: INFO
+    org.springframework.web: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - correlationId=%X{correlationId} executionId=%X{executionId} - %msg%n"

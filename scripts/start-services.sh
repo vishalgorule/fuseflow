@@ -15,15 +15,15 @@ done
 
 # Both engine instances must be able to consume results: activity-results needs concurrency ×
 # instances = 4 partitions so the range assignor gives each instance a fair share.
-./scripts/ensure-engine-ha-partitions.sh 4
+./scripts/ensure-engine-ha-partitions.sh 8
 
 ./scripts/daemon-java.sh fuseflow-api-gateway/target/fuseflow-api-gateway-*.jar /tmp/fuseflow-gateway.log
 ./scripts/daemon-java.sh fuseflow-definition-service/target/fuseflow-definition-service-*.jar /tmp/fuseflow-definition.log
 ./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine.log \
-    FUSEFLOW_ENGINE_OWNED_SHARDS=0-3 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 \
+    FUSEFLOW_ENGINE_OWNED_SHARDS=0-3 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=8 \
     FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-a
 ./scripts/daemon-java.sh fuseflow-workflow-engine/target/fuseflow-workflow-engine-*.jar /tmp/fuseflow-engine-2.log \
-    SERVER_PORT=8084 FUSEFLOW_ENGINE_OWNED_SHARDS=4-7 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=4 \
+    SERVER_PORT=8084 FUSEFLOW_ENGINE_OWNED_SHARDS=4-7 FUSEFLOW_ENGINE_LISTENER_CONCURRENCY=2 FUSEFLOW_KAFKA_TOPICS_PARTITIONS=8 \
     FUSEFLOW_ENGINE_WORKER_EVENTS_GROUP=fuseflow-engine-events-b
 ./scripts/daemon-java.sh fuseflow-worker-registry/target/fuseflow-worker-registry-*.jar /tmp/fuseflow-registry.log
 

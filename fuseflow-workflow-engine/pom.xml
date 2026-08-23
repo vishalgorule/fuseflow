@@ -52,6 +52,23 @@
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
         </dependency>
+        <!-- Phase 9 observability: Micrometer + Prometheus metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- Phase 9 observability: OpenTelemetry tracing. Boot 4 starter pulls in the OTel SDK,
+             the Micrometer tracing bridge (OtelTracer), the OTLP exporter and the observation
+             integration. @Observed (via spring-boot-starter-aop) creates spans on the engine's
+             key methods; management.otlp.tracing.endpoint points them at Jaeger. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

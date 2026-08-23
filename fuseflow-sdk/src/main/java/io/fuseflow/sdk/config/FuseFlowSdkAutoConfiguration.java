@@ -9,6 +9,10 @@ import io.fuseflow.sdk.pub.ActivityResultPublisher;
 import io.fuseflow.sdk.runtime.ActivityRegistry;
 import io.fuseflow.sdk.runtime.ActivityScanner;
 import io.fuseflow.sdk.runtime.FuseFlowWorker;
+import io.fuseflow.sdk.runtime.WorkerMetrics;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +25,7 @@ import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerConta
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
@@ -68,10 +73,19 @@ public class FuseFlowSdkAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public WorkerMetrics workerMetrics(ObjectProvider<MeterRegistry> meterRegistry) {
+        return new WorkerMetrics(meterRegistry);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public ActivityResultPublisher activityResultPublisher(
             KafkaTemplate<String, String> kafkaTemplate,
             KafkaProperties properties,
             ObjectMapper objectMapper,
+            WorkerMetrics workerMetrics,
+            ObjectProvider<Tracer> tracerProvider,
+            ObjectProvider<Propagator> propagatorProvider,
             @Value("${fuseflow.queue.activity-results:activity-results}") String queue) {
         // Post-Phase 7 hardening: two templates. The injected kafkaTemplate (Boot's) is
         // transactional — terminal results (COMPLETED/FAILED) join the pool listener's
@@ -83,7 +97,8 @@ public class FuseFlowSdkAutoConfiguration {
         producerProps.remove(ProducerConfig.TRANSACTIONAL_ID_CONFIG);
         KafkaTemplate<String, String> startedTemplate =
                 new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(producerProps));
-        return new ActivityResultPublisher(kafkaTemplate, startedTemplate, objectMapper, queue);
+        return new ActivityResultPublisher(kafkaTemplate, startedTemplate, objectMapper, queue,
+                workerMetrics, tracerProvider, propagatorProvider);
     }
 
     /**
@@ -113,8 +128,10 @@ public class FuseFlowSdkAutoConfiguration {
                                          ActivityRegistry activityRegistry,
                                          RegistryClient registryClient,
                                          ActivityResultPublisher resultPublisher,
+                                         WorkerMetrics workerMetrics,
                                          ObjectMapper objectMapper) {
-        return new FuseFlowWorker(properties, activityRegistry, registryClient, resultPublisher, objectMapper);
+        return new FuseFlowWorker(properties, activityRegistry, registryClient, resultPublisher,
+                workerMetrics, objectMapper);
     }
 
     /**
@@ -152,8 +169,11 @@ public class FuseFlowSdkAutoConfiguration {
                                                      ActivityRegistry activityRegistry,
                                                      FuseFlowWorker fuseFlowWorker,
                                                      WorkflowControlCache controlCache,
-                                                     ActivityDedupCache dedupCache) {
-        return new PoolActivityListener(objectMapper, activityRegistry, fuseFlowWorker, controlCache, dedupCache);
+                                                     ActivityDedupCache dedupCache,
+                                                     ObjectProvider<Tracer> tracerProvider,
+                                                     ObjectProvider<Propagator> propagatorProvider) {
+        return new PoolActivityListener(objectMapper, activityRegistry, fuseFlowWorker, controlCache,
+                dedupCache, tracerProvider, propagatorProvider);
     }
 
     /**

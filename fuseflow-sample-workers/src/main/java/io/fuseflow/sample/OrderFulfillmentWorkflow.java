@@ -6,6 +6,7 @@ import io.fuseflow.sdk.annotation.Workflow;
 import io.fuseflow.sdk.core.ActivityContext;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.Map;
@@ -35,8 +36,9 @@ import java.util.Map;
         retry = @Retry(maxAttempts = 3, fixedDelaySeconds = 5))
 public class OrderFulfillmentWorkflow extends AbstractSampleWorker {
 
-    public OrderFulfillmentWorkflow(ObjectMapper objectMapper) {
-        super(objectMapper);
+    public OrderFulfillmentWorkflow(ObjectMapper objectMapper,
+                                    @Value("${fuseflow.sample.activity-duration-ms:200}") long activityDurationMs) {
+        super(objectMapper, activityDurationMs);
     }
 
     @Activity(id = "validate")

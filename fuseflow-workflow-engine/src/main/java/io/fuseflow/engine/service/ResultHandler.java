@@ -1,6 +1,7 @@
 package io.fuseflow.engine.service;
 
 import io.fuseflow.engine.dispatch.ActivityResult;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.ActivityStatus;
 import io.fuseflow.engine.model.WorkflowExecution;
@@ -9,6 +10,7 @@ import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
 import io.fuseflow.engine.retry.RetryManager;
+import io.micrometer.observation.annotation.Observed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -16,9 +18,12 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Result handler (Phase 2 plan §4 task 5): persists activity output, appends the
@@ -45,6 +50,7 @@ public class ResultHandler {
     private final Scheduler scheduler;
     private final RetryManager retryManager;
     private final WorkflowFinalizer workflowFinalizer;
+    private final EngineMetrics metrics;
     private final ObjectMapper objectMapper;
 
     public ResultHandler(ActivityExecutionRepository activityRepository,
@@ -53,6 +59,7 @@ public class ResultHandler {
                          Scheduler scheduler,
                          RetryManager retryManager,
                          WorkflowFinalizer workflowFinalizer,
+                         EngineMetrics metrics,
                          ObjectMapper objectMapper) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
@@ -60,9 +67,11 @@ public class ResultHandler {
         this.scheduler = scheduler;
         this.retryManager = retryManager;
         this.workflowFinalizer = workflowFinalizer;
+        this.metrics = metrics;
         this.objectMapper = objectMapper;
     }
 
+    @Observed(name = "fuseflow.engine.result")
     @Transactional
     public void handleResult(ActivityResult result) {
         ActivityExecution activity = activityRepository.findById(result.executionId(), result.taskId()).orElse(null);
@@ -93,9 +102,14 @@ public class ResultHandler {
                 return;
             }
             eventStore.append(result.executionId(), "ActivityCompleted", completedPayload(activity, result));
+            metrics.activityCompleted(execution.workflowName());
+            metrics.recordActivityExecutionDuration(execution.workflowName(),
+                    executionDurationMillis(activity), TimeUnit.MILLISECONDS);
             scheduler.onActivityCompleted(result.executionId(), result.taskId(), activity.dependents());
         } else {
             // Phase 7: retry per policy or fail terminally (ActivityFailed + dead-letter + workflow failed).
+            // Terminal failures are counted by the RetryManager (failTerminal), so timeouts and
+            // result-driven failures are both covered without double-counting retryable ones.
             retryManager.onActivityFailed(result);
             return;
         }
@@ -116,6 +130,11 @@ public class ResultHandler {
             payload.put("output", parse(result.output()));
         }
         return payload;
+    }
+
+    /** Wall-clock execution duration from the activity row's creation (SCHEDULED) to now. */
+    private static long executionDurationMillis(ActivityExecution activity) {
+        return Duration.between(activity.createdAt(), Instant.now()).toMillis();
     }
 
     private JsonNode parse(String json) {

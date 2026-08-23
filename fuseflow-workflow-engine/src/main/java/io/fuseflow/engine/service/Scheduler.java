@@ -1,5 +1,6 @@
 package io.fuseflow.engine.service;
 
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
@@ -8,6 +9,7 @@ import io.fuseflow.engine.repository.ActivityExecutionRepository;
 import io.fuseflow.engine.repository.DispatchOutboxRepository;
 import io.fuseflow.engine.repository.EventStore;
 import io.fuseflow.engine.repository.WorkflowExecutionRepository;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Dependency-counting scheduler (architecture §6.2): marks activities SCHEDULED the moment
@@ -36,17 +39,20 @@ public class Scheduler {
     private final EventStore eventStore;
     private final PoolRoutingTable routingTable;
     private final DispatchOutboxRepository outboxRepository;
+    private final EngineMetrics metrics;
 
     public Scheduler(ActivityExecutionRepository activityRepository,
                      WorkflowExecutionRepository executionRepository,
                      EventStore eventStore,
                      PoolRoutingTable routingTable,
-                     DispatchOutboxRepository outboxRepository) {
+                     DispatchOutboxRepository outboxRepository,
+                     EngineMetrics metrics) {
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.eventStore = eventStore;
         this.routingTable = routingTable;
         this.outboxRepository = outboxRepository;
+        this.metrics = metrics;
     }
 
     /**
@@ -58,11 +64,13 @@ public class Scheduler {
      * task of an execution, so callers that already hold it (start, recovery) avoid the
      * per-schedule re-read, and the result path resolves it lazily at most once per completion.
      */
+    @Observed(name = "fuseflow.engine.schedule")
     @Transactional
     public void schedule(UUID executionId, List<ActivityExecution> activities, String input) {
         if (activities == null || activities.isEmpty()) {
             return;
         }
+        long start = System.nanoTime();
         // Phase 8: a PAUSED execution schedules nothing new (in-flight activities may finish;
         // dependents stay PENDING and are scheduled by resume's re-drive). Terminal executions
         // schedule nothing either.
@@ -79,6 +87,7 @@ public class Scheduler {
                         "taskId", activity.taskId(),
                         "activityName", activity.activityName(),
                         "reason", "no ONLINE pool advertises activity '" + activity.activityName() + "'"));
+                metrics.activityUnroutable(execution.workflowName());
                 continue;
             }
             if (activityRepository.markScheduled(executionId, activity.taskId(), activity.version())) {
@@ -88,8 +97,11 @@ public class Scheduler {
                 // between this transaction and the Kafka publish can never lose the task.
                 outboxRepository.insert(executionId, activity.taskId(), activity.activityName(),
                         input, activity.attempt());
+                metrics.activityScheduled(execution.workflowName());
             }
         }
+        metrics.recordSchedulingDuration(execution.workflowName(),
+                System.nanoTime() - start, TimeUnit.NANOSECONDS);
     }
 
     /**

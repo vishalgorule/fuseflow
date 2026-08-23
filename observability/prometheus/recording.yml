@@ -1,0 +1,107 @@
+# FuseFlow Recording Rules (Phase 9 Observability)
+# Pre-computed aggregates for dashboard performance at high cardinality
+#
+# Idle-safety: every rule appends `or vector(0)` so the precomputed series exist with a
+# value of 0 even when the underlying counter has no series yet (lazily-registered meters).
+# Dashboards therefore show 0 instead of "No data" when nothing has happened.
+
+groups:
+  # ────────────────────────────────────────────────────────────────
+  # Workflow Engine Recording Rules
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_workflow_rates
+    interval: 15s
+    rules:
+      # Workflow throughput (1m, 5m windows)
+      - record: fuseflow_workflow_started:rate1m
+        expr: sum by (job) (rate(fuseflow_workflow_started_total[1m])) or vector(0)
+      - record: fuseflow_workflow_started:rate5m
+        expr: sum by (job) (rate(fuseflow_workflow_started_total[5m])) or vector(0)
+      - record: fuseflow_workflow_completed:rate1m
+        expr: sum by (job) (rate(fuseflow_workflow_completed_total[1m])) or vector(0)
+      - record: fuseflow_workflow_completed:rate5m
+        expr: sum by (job) (rate(fuseflow_workflow_completed_total[5m])) or vector(0)
+      - record: fuseflow_workflow_failed:rate1m
+        expr: sum by (job) (rate(fuseflow_workflow_failed_total[1m])) or vector(0)
+      - record: fuseflow_workflow_failed:rate5m
+        expr: sum by (job) (rate(fuseflow_workflow_failed_total[5m])) or vector(0)
+
+      # Activity throughput
+      - record: fuseflow_activity_scheduled:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_scheduled_total[1m])) or vector(0)
+      - record: fuseflow_activity_completed:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_completed_total[1m])) or vector(0)
+      - record: fuseflow_activity_completed:rate5m
+        expr: sum by (job) (rate(fuseflow_activity_completed_total[5m])) or vector(0)
+      - record: fuseflow_activity_failed:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_failed_total[1m])) or vector(0)
+      - record: fuseflow_activity_failed:rate5m
+        expr: sum by (job) (rate(fuseflow_activity_failed_total[5m])) or vector(0)
+      - record: fuseflow_activity_retried:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_retried_total[1m])) or vector(0)
+      - record: fuseflow_activity_retried:rate5m
+        expr: sum by (job) (rate(fuseflow_activity_retried_total[5m])) or vector(0)
+      - record: fuseflow_activity_timed_out:rate1m
+        expr: sum by (job, type) (rate(fuseflow_activity_timed_out_total[1m])) or vector(0)
+      - record: fuseflow_activity_timed_out:rate5m
+        expr: sum by (job, type) (rate(fuseflow_activity_timed_out_total[5m])) or vector(0)
+      - record: fuseflow_activity_unroutable:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_unroutable_total[1m])) or vector(0)
+      - record: fuseflow_activity_unroutable:rate5m
+        expr: sum by (job) (rate(fuseflow_activity_unroutable_total[5m])) or vector(0)
+      - record: fuseflow_activity_dead_lettered:rate1m
+        expr: sum by (job) (rate(fuseflow_activity_dead_lettered_total[1m])) or vector(0)
+      - record: fuseflow_activity_dead_lettered:rate5m
+        expr: sum by (job) (rate(fuseflow_activity_dead_lettered_total[5m])) or vector(0)
+
+      # Dispatch throughput
+      - record: fuseflow_dispatch_attempted:rate1m
+        expr: sum by (job) (rate(fuseflow_dispatch_attempted_total[1m])) or vector(0)
+      - record: fuseflow_dispatch_attempted:rate5m
+        expr: sum by (job) (rate(fuseflow_dispatch_attempted_total[5m])) or vector(0)
+      - record: fuseflow_dispatch_succeeded:rate1m
+        expr: sum by (job) (rate(fuseflow_dispatch_succeeded_total[1m])) or vector(0)
+      - record: fuseflow_dispatch_failed:rate1m
+        expr: sum by (job) (rate(fuseflow_dispatch_failed_total[1m])) or vector(0)
+      - record: fuseflow_dispatch_failed:rate5m
+        expr: sum by (job) (rate(fuseflow_dispatch_failed_total[5m])) or vector(0)
+
+  # ────────────────────────────────────────────────────────────────
+  # SLO Recording Rules
+  # ────────────────────────────────────────────────────────────────
+  - name: fuseflow_slo
+    interval: 15s
+    rules:
+      # Error ratios over short (5m) and long (30m) windows. Both are required by the
+      # multiwindow burn-rate alerts: the short window catches spikes, the long window
+      # confirms they are sustained rather than a scrape blip.
+      # Fleet-wide (no job grouping): both engine instances share the workflow counters, so a
+      # single series is the correct SLO signal and keeps dashboards/stat panels to one value.
+      # Idle-safe: missing counters default to 0 and the denominator is floored at 1, so the
+      # ratio is 0 (never NaN) when nothing has completed/failed — SLO panels then read 100%.
+      - record: fuseflow_workflow_error_ratio:ratio5m
+        expr: |
+          (sum(rate(fuseflow_workflow_failed_total[5m])) or vector(0))
+          / clamp_min((sum(rate(fuseflow_workflow_completed_total[5m])) or vector(0))
+                      + (sum(rate(fuseflow_workflow_failed_total[5m])) or vector(0)), 1)
+
+      - record: fuseflow_workflow_error_ratio:ratio30m
+        expr: |
+          (sum(rate(fuseflow_workflow_failed_total[30m])) or vector(0))
+          / clamp_min((sum(rate(fuseflow_workflow_completed_total[30m])) or vector(0))
+                      + (sum(rate(fuseflow_workflow_failed_total[30m])) or vector(0)), 1)
+
+      # Burn rate = error ratio / budget error ratio (0.1% for a 99.9% SLO).
+      # 1.0 = consuming the budget exactly at the allowed rate; >1 = burning faster.
+      - record: fuseflow_workflow_availability:burnrate1h
+        expr: fuseflow_workflow_error_ratio:ratio5m / 0.001
+
+      - record: fuseflow_workflow_availability:burnrate6h
+        expr: fuseflow_workflow_error_ratio:ratio30m / 0.001
+
+      # Activity error ratio (terminal failures only) — fleet-wide single series, idle-safe.
+      - record: fuseflow_activity_error_ratio:ratio5m
+        expr: |
+          (sum(rate(fuseflow_activity_failed_total[5m])) or vector(0))
+          / clamp_min((sum(rate(fuseflow_activity_completed_total[5m])) or vector(0))
+                      + (sum(rate(fuseflow_activity_failed_total[5m])) or vector(0)), 1)

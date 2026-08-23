@@ -2,6 +2,7 @@ package io.fuseflow.engine.dispatch;
 
 import io.fuseflow.common.messaging.ActivityTask;
 import io.fuseflow.engine.config.ReliabilityProperties;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.registry.PoolRoutingTable;
 import io.fuseflow.engine.repository.DispatchOutboxRepository;
 import io.fuseflow.engine.repository.EventStore;
@@ -34,8 +35,9 @@ class DispatchOutboxPublisherTest {
     private final TaskDispatcher taskDispatcher = mock(TaskDispatcher.class);
     private final EventStore eventStore = mock(EventStore.class);
     private final ReliabilityProperties properties = new ReliabilityProperties();
+    private final EngineMetrics metrics = mock(EngineMetrics.class);
     private final DispatchOutboxPublisher publisher =
-            new DispatchOutboxPublisher(outboxRepository, routingTable, taskDispatcher, eventStore, properties);
+            new DispatchOutboxPublisher(outboxRepository, routingTable, taskDispatcher, eventStore, properties, metrics);
 
     private static DispatchOutboxRepository.Entry entry(String taskId, String activity, int attempt, String status) {
         return new DispatchOutboxRepository.Entry(UUID.randomUUID(), UUID.randomUUID(), taskId, activity,
@@ -58,7 +60,8 @@ class DispatchOutboxPublisherTest {
         assertThat(task.getValue().activityName()).isEqualTo("resizeImage");
         assertThat(task.getValue().attempt()).isEqualTo(1);
         assertThat(task.getValue().input()).isEqualTo("{\"k\":1}");
-        verify(outboxRepository).markPublished(pending.id());
+        // Dispatch marks are batched (one statement per chunk, not one UPDATE per row).
+        verify(outboxRepository).markPublishedBatch(List.of(pending.id()));
         verify(eventStore, never()).append(any(), eq("ActivityUnroutable"), any());
     }
 
@@ -75,7 +78,7 @@ class DispatchOutboxPublisherTest {
         publisher.publishPending();
         verify(eventStore).append(eq(pending.workflowExecutionId()), eq("ActivityUnroutable"), any());
         verify(taskDispatcher, never()).dispatch(any());
-        verify(outboxRepository, never()).markPublished(pending.id());
+        verify(outboxRepository, never()).markPublishedBatch(any());
 
         // Subsequent polls while the pool is still away: markUnroutable returns false → the
         // history is not spammed; the row stays PENDING (still no retry clock, no dispatch).

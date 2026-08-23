@@ -137,6 +137,23 @@ public class WorkflowExecutionRepository {
                 .list();
     }
 
+    /** Returns the total count of executions — used by the metrics gauge. */
+    public int countAll() {
+        return jdbc.sql("SELECT COUNT(*) FROM " + TABLE)
+                .query((rs, rowNum) -> rs.getInt(1))
+                .single();
+    }
+
+    /** Returns the count of executions in the given status — used by the metrics gauge. */
+    public int countByStatus(WorkflowStatus status) {
+        return jdbc.sql("""
+                        SELECT COUNT(*) FROM %s WHERE status = :status
+                        """.formatted(TABLE))
+                .param("status", status.name())
+                .query((rs, rowNum) -> rs.getInt(1))
+                .single();
+    }
+
     /**
      * Terminal success transition (RUNNING|PAUSED → COMPLETED). Phase 8: a paused execution
      * whose in-flight activities all drain completes while paused ("in-flight allowed to

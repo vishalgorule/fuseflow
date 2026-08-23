@@ -1,6 +1,7 @@
 package io.fuseflow.engine.registry;
 
 import io.fuseflow.common.dto.WorkerResponse;
+import io.fuseflow.engine.metrics.EngineMetrics;
 import io.fuseflow.engine.model.ActivityExecution;
 import io.fuseflow.engine.model.WorkflowExecution;
 import io.fuseflow.engine.model.WorkflowStatus;
@@ -45,6 +46,7 @@ public class PoolRoutingService implements ApplicationRunner, Ordered {
     private final ActivityExecutionRepository activityRepository;
     private final WorkflowExecutionRepository executionRepository;
     private final Scheduler scheduler;
+    private final EngineMetrics engineMetrics;
 
     /** Capability set from the previous refresh — growth detection for the rejoin sweep. */
     private volatile Set<String> previousActivities = Set.of();
@@ -54,13 +56,15 @@ public class PoolRoutingService implements ApplicationRunner, Ordered {
                               PoolTopicProvisioner topicProvisioner,
                               ActivityExecutionRepository activityRepository,
                               WorkflowExecutionRepository executionRepository,
-                              Scheduler scheduler) {
+                              Scheduler scheduler,
+                              EngineMetrics engineMetrics) {
         this.registryClient = registryClient;
         this.routingTable = routingTable;
         this.topicProvisioner = topicProvisioner;
         this.activityRepository = activityRepository;
         this.executionRepository = executionRepository;
         this.scheduler = scheduler;
+        this.engineMetrics = engineMetrics;
     }
 
     @Override
@@ -95,8 +99,10 @@ public class PoolRoutingService implements ApplicationRunner, Ordered {
                 reDriveRunnablePending();
             }
             previousActivities = current;
-            log.info("Pool routing refreshed: {} pool(s), {} activity(ies)",
-                    routingTable.poolNames().size(), routingTable.size());
+            engineMetrics.setActiveWorkers(routingTable.onlineWorkerCount(workers));
+            log.info("Pool routing refreshed: {} pool(s), {} activity(ies), {} worker(s)",
+                    routingTable.poolNames().size(), routingTable.size(),
+                    routingTable.onlineWorkerCount(workers));
         } catch (Exception ex) {
             // Registry down at boot, or a transient failure — the table keeps its last good
             // snapshot and the next worker-events message retries.

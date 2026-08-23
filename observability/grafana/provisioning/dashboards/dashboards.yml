@@ -1,0 +1,14 @@
+# Grafana Dashboard Provisioning (Phase 9 Observability)
+apiVersion: 1
+
+providers:
+  - name: 'FuseFlow'
+    orgId: 1
+    folder: 'FuseFlow'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
