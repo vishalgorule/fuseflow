@@ -30,5 +30,6 @@ logs/
 .reports/
 
 docs/
+config/
 
 README.md
